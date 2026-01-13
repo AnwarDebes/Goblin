@@ -1,0 +1,31 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'market-data'
+    static_configs:
+      - targets: ['market-data:8000']
+
+  - job_name: 'prediction'
+    static_configs:
+      - targets: ['prediction:8000']
+
+  - job_name: 'signal'
+    static_configs:
+      - targets: ['signal:8000']
+
+  - job_name: 'risk'
+    static_configs:
+      - targets: ['risk:8000']
+
+  - job_name: 'executor'
+    static_configs:
+      - targets: ['executor:8000']
+
+  - job_name: 'position'
+    static_configs:
+      - targets: ['position:8000']
+
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['api-gateway:8000']

@@ -1,0 +1,263 @@
+# ===========================================
+# MangoCoco .gitignore
+# ===========================================
+
+# ============================================
+# CRITICAL: Credentials and Secrets
+# ============================================
+# Never commit these files!
+.env
+config/.env
+*.env.local
+*.env.production
+*secret*
+*SECRET*
+*credentials*
+*CREDENTIALS*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+*.keystore
+
+# API Keys and tokens
+*api_key*
+*API_KEY*
+*api-key*
+*access_token*
+*ACCESS_TOKEN*
+
+# ============================================
+# Docker & Container Data
+# ============================================
+# Persistent data volumes
+shared/redis-data/
+shared/timescale-data/
+shared/models/
+shared/*/
+
+# Docker logs and temp files
+*.log
+logs/
+*.pid
+*.sock
+
+# ============================================
+# Python
+# ============================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+.ENV
+.env.venv
+virtualenv/
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# ============================================
+# Node.js (for dashboard)
+# ============================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+.npm
+.yarn
+.pnpm-debug.log*
+
+# ============================================
+# IDEs and Editors
+# ============================================
+# VSCode
+.vscode/
+.vscode-server/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# ============================================
+# Operating System
+# ============================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ============================================
+# Database dumps and backups
+# ============================================
+# Block all SQL files except init/schema files
+*.sql
+!config/init-db.sql
+!*schema*.sql
+!*init*.sql
+
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+backup/
+backups/
+*.backup
+*.bak
+
+# ============================================
+# ML Models and Large Files
+# ============================================
+# Trained models (should use Git LFS or external storage)
+*.h5
+*.pkl
+*.pickle
+*.joblib
+*.ckpt
+*.pt
+*.pth
+models/*.h5
+models/*.pkl
+
+# Large datasets
+*.csv.gz
+*.parquet
+data/
+datasets/
+
+# ============================================
+# Temporary and Cache Files
+# ============================================
+tmp/
+temp/
+*.tmp
+*.temp
+.cache/
+cache/
+
+# ============================================
+# Monitoring and Metrics
+# ============================================
+# Prometheus data
+prometheus-data/
+grafana-data/
+
+# ============================================
+# Documentation Build Files
+# ============================================
+docs/_build/
+site/
+
+# ============================================
+# Testing
+# ============================================
+.tox/
+.coverage
+htmlcov/
+
+# ============================================
+# CI/CD
+# ============================================
+.github/workflows/*.local.yml
+
+# ============================================
+# Project Specific
+# ============================================
+# Your implementation documentation (can keep if you want)
+# mangococo_complete_implementation-Final.md
+
+# Trading data and history
+trading_history/
+trade_logs/
+positions_history/
+
+# Performance data
+performance_reports/
+backtest_results/
