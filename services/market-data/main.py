@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional
 from contextlib import asynccontextmanager
 
-import ccxt.pro as ccxtpro
+import ccxt
 import redis.asyncio as aioredis
 import structlog
 from fastapi import FastAPI
@@ -18,7 +18,7 @@ from prometheus_client import Counter, Gauge, generate_latest
 # Configuration
 MEXC_API_KEY = os.getenv("MEXC_API_KEY", "")
 MEXC_SECRET_KEY = os.getenv("MEXC_SECRET_KEY", "")
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")  # Use localhost when using host network mode
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 TRADING_PAIRS = os.getenv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT").split(",")
@@ -31,52 +31,94 @@ WS_CONNECTED = Gauge("market_data_ws_connected", "WebSocket connection status")
 LAST_PRICE = Gauge("market_data_last_price", "Last price", ["symbol"])
 
 # Global State
-exchange: Optional[ccxtpro.mexc] = None
+exchange: Optional[ccxt.mexc] = None
 redis_client: Optional[aioredis.Redis] = None
 is_connected = False
 last_ticks = {}
-streaming_task = None
+polling_task = None
 
 
-async def stream_market_data():
-    """Stream real-time ticker data from MEXC"""
+async def process_ticker(symbol: str, ticker: dict):
+    """Process individual ticker data efficiently"""
+    tick_data = {
+        "symbol": symbol,
+        "timestamp": datetime.utcnow().isoformat(),
+        "price": float(ticker.get("last", 0)),
+        "bid": float(ticker.get("bid", 0)),
+        "ask": float(ticker.get("ask", 0)),
+        "volume": float(ticker.get("quoteVolume", 0)),
+        "change_pct": float(ticker.get("percentage", 0)),
+    }
+
+    # Store in Redis with optimized operations for high volume
+    await redis_client.hset("latest_ticks", symbol, json.dumps(tick_data))
+
+    # Publish to Redis pubsub for real-time updates (only for active trading pairs to reduce noise)
+    if symbol in TRADING_PAIRS:  # Only publish for our trading pairs
+        await redis_client.publish(f"ticks:{symbol.replace('/', '_')}", json.dumps(tick_data))
+
+    TICKS_RECEIVED.labels(symbol=symbol).inc()
+    LAST_PRICE.labels(symbol=symbol).set(tick_data["price"])
+
+
+async def poll_market_data():
+    """Poll ticker data from MEXC REST API - optimized for 200+ coins"""
     global is_connected, last_ticks, exchange
 
     symbols = [s.strip() for s in TRADING_PAIRS]
-    logger.info("Starting market data stream", symbols=symbols)
+    logger.info(f"Starting market data polling for {len(symbols)} coins - high volume mode")
 
     while True:
         try:
             is_connected = True
             WS_CONNECTED.set(1)
 
-            while True:
-                tickers = await exchange.watch_tickers(symbols)
+            # Poll tickers in optimized batches to handle 200+ coins efficiently
+            batch_size = 50  # Process 50 coins per batch
+            poll_start = datetime.utcnow()
 
-                for symbol, ticker in tickers.items():
-                    tick_data = {
-                        "symbol": symbol,
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "price": float(ticker.get("last", 0)),
-                        "bid": float(ticker.get("bid", 0)),
-                        "ask": float(ticker.get("ask", 0)),
-                        "volume": float(ticker.get("quoteVolume", 0)),
-                        "change_pct": float(ticker.get("percentage", 0)),
-                    }
+            for i in range(0, len(symbols), batch_size):
+                batch_symbols = symbols[i:i + batch_size]
+                try:
+                    # Fetch multiple tickers at once if supported, otherwise individually
+                    if hasattr(exchange, 'fetch_tickers'):
+                        try:
+                            tickers = exchange.fetch_tickers(batch_symbols)
+                            for symbol, ticker in tickers.items():
+                                await process_ticker(symbol, ticker)
+                        except:
+                            # Fallback to individual fetching
+                            for symbol in batch_symbols:
+                                try:
+                                    ticker = exchange.fetch_ticker(symbol)
+                                    await process_ticker(symbol, ticker)
+                                    await asyncio.sleep(0.01)  # Small delay to avoid rate limits
+                                except Exception as e:
+                                    logger.debug(f"Failed to fetch {symbol}", error=str(e))
+                    else:
+                        # Individual fetching with rate limiting
+                        for symbol in batch_symbols:
+                            try:
+                                ticker = exchange.fetch_ticker(symbol)
+                                await process_ticker(symbol, ticker)
+                                await asyncio.sleep(0.01)  # Small delay between requests
+                            except Exception as e:
+                                logger.debug(f"Failed to fetch {symbol}", error=str(e))
 
-                    TICKS_RECEIVED.labels(symbol=symbol).inc()
-                    LAST_PRICE.labels(symbol=symbol).set(tick_data["price"])
+                except Exception as e:
+                    logger.error(f"Batch processing failed for batch {i//batch_size + 1}", error=str(e))
 
-                    last_ticks[symbol] = tick_data
+            # Performance monitoring
+            poll_duration = (datetime.utcnow() - poll_start).total_seconds()
+            logger.info(f"Market data poll completed: {len(symbols)} coins in {poll_duration:.2f}s ({len(symbols)/poll_duration:.1f} coins/sec)")
 
-                    channel = f"ticks:{symbol.replace('/', '_')}"
-                    await redis_client.publish(channel, json.dumps(tick_data))
-                    await redis_client.hset("latest_ticks", symbol, json.dumps(tick_data))
+            # Wait before next poll - faster for high-volume scanning
+            await asyncio.sleep(1.0)  # Poll every 1 second for 200+ coins
 
         except Exception as e:
             is_connected = False
             WS_CONNECTED.set(0)
-            logger.error("WebSocket error, reconnecting...", error=str(e))
+            logger.error("Market data polling error", error=str(e))
             await asyncio.sleep(5)
 
 
@@ -93,19 +135,18 @@ async def lifespan(app: FastAPI):
     await redis_client.ping()
     logger.info("Redis connected")
 
-    exchange = ccxtpro.mexc({
-        "apiKey": MEXC_API_KEY,
-        "secret": MEXC_SECRET_KEY,
+    # Use MEXC exchange without API keys for public market data
+    exchange = ccxt.mexc({
         "enableRateLimit": True,
     })
-    logger.info("MEXC exchange initialized")
+    logger.info("MEXC exchange initialized (REST mode)")
 
-    streaming_task = asyncio.create_task(stream_market_data())
+    polling_task = asyncio.create_task(poll_market_data())
 
     yield
 
-    if streaming_task:
-        streaming_task.cancel()
+    if polling_task:
+        polling_task.cancel()
     if exchange:
         await exchange.close()
     if redis_client:

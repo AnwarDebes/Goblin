@@ -1,4 +1,4 @@
-# MangoCoco - AI-Powered Crypto Trading Bot
+# MangoCoco - Short-Term Momentum Crypto Trading Bot
 
 > **⚠️ PROPRIETARY SOFTWARE - ALL RIGHTS RESERVED**
 >
@@ -10,37 +10,40 @@
 
 ---
 
-MangoCoco is an intelligent cryptocurrency trading bot that uses machine learning to predict market movements and execute trades automatically on MEXC exchange.
+MangoCoco is a **short-term momentum-based cryptocurrency trading bot** that uses RSI indicators, price momentum, and volume analysis to identify profitable trading opportunities on MEXC exchange.
 
-**This is a private project for personal use only.**
+**Strategy**: Buy oversold assets with upward momentum, sell overbought assets with downward momentum. Multiple small trades for consistent profits.
 
 ## Features
 
-- **AI-Powered Predictions**: LSTM neural network for price prediction
+- **Momentum + RSI Strategy**: Technical analysis based trading signals
 - **Real-Time Market Data**: WebSocket streaming from MEXC
-- **Risk Management**: Built-in stop-loss, position sizing, and daily loss limits
-- **Microservices Architecture**: 8 specialized services for scalability
-- **Live Dashboard**: React-based UI for monitoring
-- **TimescaleDB**: Optimized time-series data storage
-- **Prometheus & Grafana**: Comprehensive monitoring
+- **Conservative Risk Management**: 25% max position size, 10% daily loss limit
+- **Microservices Architecture**: 7 specialized services for reliability
+- **Live Dashboard**: Enhanced React UI with real-time P&L tracking
+- **TimescaleDB**: Time-series data storage for analytics
+- **Fast Execution**: 15-second signal generation, 30-second trade intervals
 
 ## System Architecture
 
 ```
 ┌─────────────┐
-│  Dashboard  │ (React UI)
+│   Terminal   │ (Web UI - Port 8080)
+│  (Signals &  │
+│   P&L Live)  │
 └──────┬──────┘
        │
 ┌──────▼──────────┐
 │  API Gateway    │ (Port 8080)
+│ (Central Hub)   │
 └──────┬──────────┘
        │
-       ├──► Market Data Service (Price streaming)
-       ├──► Prediction Service (ML predictions)
-       ├──► Signal Service (Trade signals)
-       ├──► Risk Service (Risk checks)
-       ├──► Executor Service (Trade execution)
-       └──► Position Service (Portfolio tracking)
+       ├──► Market Data Service (MEXC WebSocket)
+       ├──► Prediction Service (RSI + Momentum)
+       ├──► Signal Service (Buy/Sell Signals)
+       ├──► Risk Service (Position Limits)
+       ├──► Executor Service (Order Execution)
+       └──► Position Service (P&L Tracking)
 ```
 
 ## Requirements
@@ -64,114 +67,115 @@ MangoCoco is an intelligent cryptocurrency trading bot that uses machine learnin
 
 ## Quick Start
 
-### 1. Clone Repository
+### 1. Verify Your Setup
+
+Your configuration is already prepared with:
+- ✅ MEXC API credentials configured
+- ✅ Optimized settings for short-term trading
+- ✅ Conservative risk management (25% max position)
+
+### 2. Test Trading Capability (Important!)
+
+Before going live, test that your bot can actually trade:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/mangococo.git
-cd mangococo
+# Run the test script
+python3 test_trading.py
 ```
 
-### 2. Configure Environment
+This will:
+- Test Redis connection
+- Verify MEXC API access
+- Optionally place a tiny test order ($0.10)
+
+### 3. Start Trading
 
 ```bash
-# Copy example config
-cp config/.env.example config/.env
-
-# Edit with your credentials
-nano config/.env
-```
-
-**Required Settings:**
-```env
-MEXC_API_KEY=your_api_key_here
-MEXC_SECRET_KEY=your_secret_key_here
-STARTING_CAPITAL=2.89
-```
-
-### 3. Get MEXC API Credentials
-
-1. Login to [MEXC](https://www.mexc.com)
-2. Go to **API Management**
-3. Click **Create API Key**
-4. Enable **Spot Trading** permissions
-5. Add your server IP to whitelist
-6. Save API Key and Secret Key
-
-### 4. Start the System
-
-```bash
-# Create necessary directories
-mkdir -p shared/redis-data shared/timescale-data shared/models logs
+# Create data directories
+mkdir -p shared/redis-data shared/timescale-data logs
 
 # Start all services
 docker compose up -d --build
 ```
 
-This will start 12 containers:
-- 8 trading services
-- Redis (cache)
-- TimescaleDB (database)
-- Prometheus (metrics)
-- Grafana (dashboards)
+This starts 9 containers:
+- 7 trading services
+- Redis (messaging)
+- TimescaleDB (data)
+- Dashboard (monitoring)
 
-### 5. Verify Deployment
+### 4. Monitor Your Bot
+
+**Terminal**: `http://localhost:8080`
+- Real-time portfolio P&L
+- Live price charts
+- Current AI signals
+- Open positions with entry times
+- System health status
+
+**API Status**: `http://localhost:8080/status`
+
+### 5. Watch Trading Activity
 
 ```bash
-# Check all containers are running
-docker compose ps
-
-# Check logs
+# View all service logs
 docker compose logs -f
 
-# Test API
-curl http://localhost:8080/status
+# Monitor specific service
+docker compose logs -f executor  # Order execution
+docker compose logs -f signal    # Trading signals
+docker compose logs -f prediction # AI predictions
 ```
 
-Expected output:
-```json
-{
-  "market-data": {"healthy": true},
-  "prediction": {"healthy": true},
-  "signal": {"healthy": true},
-  ...
-}
-```
+## Trading Strategy Explained
 
-### 6. Access Dashboard
+### Momentum + RSI Strategy
 
-Open browser: `http://YOUR_SERVER_IP:3000`
+The bot uses a **short-term momentum strategy** with technical indicators:
 
-You should see:
-- Live price charts
-- Portfolio value
-- Open positions
-- Recent signals
-- System status
+1. **RSI (Relative Strength Index)**:
+   - **BUY** when RSI ≤ 25 (oversold)
+   - **SELL** when RSI ≥ 75 (overbought)
 
-## Configuration
+2. **Momentum Confirmation**:
+   - Buy signals need upward price momentum (>0.1%)
+   - Sell signals need downward price momentum (<-0.1%)
 
-### Trading Pairs
+3. **Volume Spike Filter**:
+   - Only trade when volume is 1.5x recent average
+   - Confirms market interest in the move
 
-Edit `config/.env`:
-```env
-TRADING_PAIRS=BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT
-```
+4. **Position Management**:
+   - Hold positions maximum 5 minutes
+   - Take profit at 0.8% gain
+   - Stop loss at 0.5% loss
 
-### Risk Settings
+### Expected Performance
 
-```env
-MAX_POSITION_PCT=0.50          # Max 50% per position
-MIN_POSITION_USD=5.00          # Min $5 per trade
-MAX_DAILY_LOSS_PCT=0.20        # Stop at 20% daily loss
-MAX_OPEN_POSITIONS=3           # Max 3 concurrent positions
-```
+- **Target**: 0.5-1% profit per trade
+- **Frequency**: Multiple trades per hour
+- **Risk**: Conservative position sizing
+- **Holding**: Short-term (minutes, not hours)
 
-### ML Model Settings
+## Configuration (Already Optimized)
+
+Your settings are pre-configured for safe short-term trading:
 
 ```env
-SEQUENCE_LENGTH=60              # 60 data points for prediction
-PREDICTION_HORIZON=5            # Predict 5 minutes ahead
-CONFIDENCE_THRESHOLD=0.65       # Minimum 65% confidence
+# Conservative position sizing
+MAX_POSITION_PCT=0.25          # Max 25% per trade
+MIN_POSITION_USD=0.20          # Min $0.20 trades
+MAX_DAILY_LOSS_PCT=0.10        # Stop at 10% daily loss
+MAX_OPEN_POSITIONS=1           # Only 1 position at a time
+
+# Fast signal generation
+MIN_TIME_BETWEEN_TRADES=30     # 30 seconds between trades
+
+# Strategy parameters
+RSI_OVERSOLD=25                # Buy when RSI <= 25
+RSI_OVERBOUGHT=75              # Sell when RSI >= 75
+PROFIT_TARGET_PCT=0.8          # Take profit at 0.8%
+STOP_LOSS_PCT=0.5              # Stop loss at 0.5%
 ```
 
 ## GPU Support (Optional)
@@ -208,16 +212,66 @@ prediction:
 USE_GPU=true
 ```
 
-## Monitoring
+## Monitoring & Performance Tracking
 
-### Prometheus Metrics
-- URL: `http://YOUR_SERVER_IP:9090`
-- Metrics: trades, positions, predictions, API calls
+### Live Terminal (`http://localhost:8080`)
 
-### Grafana Dashboards
-- URL: `http://YOUR_SERVER_IP:3001`
-- Login: `admin` / `admin`
-- Pre-configured trading dashboards
+The enhanced terminal shows:
+
+1. **Portfolio Overview**:
+   - Total capital and available balance
+   - Daily P&L with color coding
+   - Number of open positions
+
+2. **Current Signals**:
+   - Latest buy/sell signals from AI
+   - Confidence levels and prices
+   - Real-time signal generation
+
+3. **AI Predictions**:
+   - Current market predictions
+   - RSI values and momentum indicators
+   - Signal strength confidence
+
+4. **Open Positions**:
+   - Entry price and current price
+   - Unrealized P&L with percentages
+   - Position duration (minutes held)
+   - Amount and value tracking
+
+5. **Price Charts**:
+   - Live BTC/USDT price movement
+   - 30-point rolling chart
+
+### System Health Monitoring
+
+```bash
+# Check all services
+curl http://localhost:8080/status
+
+# Monitor trading activity
+docker compose logs -f executor
+
+# View signal generation
+docker compose logs -f prediction
+```
+
+### Performance Tracking
+
+**Daily Goals**:
+- Target: 2-5% daily profit
+- Risk: Maximum 10% daily loss
+- Trades: 10-20 trades per day
+
+**Weekly Review**:
+- Check total P&L
+- Review win/loss ratio
+- Adjust position sizes if needed
+
+**Monthly Assessment**:
+- Calculate total return
+- Review strategy effectiveness
+- Consider strategy refinements
 
 ### Logs
 
@@ -247,63 +301,95 @@ Base URL: `http://localhost:8080`
 | `/api/predictions` | GET | Latest predictions |
 | `/api/trades` | GET | Trade history |
 
-## Troubleshooting
+## Troubleshooting & Maintenance
 
-### Containers Won't Start
+### Bot Not Trading
 
+1. **Check Terminal**: Visit `http://localhost:8080`
+   - Look for "Current Signals" section
+   - Check if signals are being generated
+
+2. **Verify Market Data**:
 ```bash
-# Check logs
-docker compose logs
-
-# Restart specific service
-docker compose restart market-data
-
-# Rebuild containers
-docker compose up -d --build
+# Check if prices are streaming
+curl http://localhost:8080/api/tickers
 ```
 
-### Connection to MEXC Failed
-
-1. Verify API keys in `config/.env`
-2. Check IP whitelist in MEXC settings
-3. Test API keys:
+3. **Check Service Health**:
 ```bash
-curl -X GET "https://api.mexc.com/api/v3/account" \
-  -H "X-MEXC-APIKEY: your_api_key"
+# All services should be healthy
+curl http://localhost:8080/status
 ```
 
-### Insufficient Capital Errors
+4. **Review Logs**:
+```bash
+# Check for errors
+docker compose logs -f prediction
+docker compose logs -f signal
+```
+
+### No Signals Being Generated
+
+- **RSI Conditions**: Market may not be oversold/overbought
+- **Volume Filter**: Trading volume may be too low
+- **Momentum**: Price may not have sufficient momentum
+- **Wait**: Strategy needs time to collect market data
+
+### Orders Failing
 
 ```bash
-# Check balance
+# Check MEXC API connection
 curl http://localhost:8080/api/balance
 
-# Update in .env
-STARTING_CAPITAL=10.00
-MIN_POSITION_USD=5.00
+# Verify API keys (don't log the actual keys)
+docker compose logs executor
 ```
 
-### Prediction Service Crashes (Out of Memory)
-
-Reduce model complexity in `services/prediction/main.py`:
-```python
-LSTM(32)  # Instead of LSTM(64)
-```
-
-Or increase server RAM to 8GB+.
-
-### Database Connection Issues
+### Dashboard Not Loading
 
 ```bash
-# Restart database
-docker compose restart timescaledb
+# Check API gateway (terminal)
+docker compose logs api-gateway
 
-# Check database logs
-docker compose logs timescaledb
+# Restart API gateway
+docker compose restart api-gateway
+```
 
-# Reset database (WARNING: deletes all data)
+### Performance Issues
+
+If the bot is too slow:
+
+```bash
+# Check system resources
+docker stats
+
+# Restart services
+docker compose restart
+```
+
+### Emergency Stop
+
+To stop all trading immediately:
+
+```bash
+# Stop all services
+docker compose down
+
+# Or just stop trading services
+docker compose stop prediction signal executor
+```
+
+### Reset Everything
+
+**⚠️ WARNING: This deletes all data**
+
+```bash
+# Stop and remove all data
 docker compose down -v
-docker compose up -d
+rm -rf shared/redis-data shared/timescale-data logs
+
+# Restart fresh
+docker compose up -d --build
 ```
 
 ## Maintenance
@@ -392,7 +478,7 @@ sudo apt update && sudo apt upgrade -y
 # Enable firewall
 sudo ufw allow 22/tcp    # SSH
 sudo ufw allow 8080/tcp  # API
-sudo ufw allow 3000/tcp  # Dashboard
+sudo ufw allow 8080/tcp  # Terminal
 sudo ufw enable
 
 # Disable password auth (use SSH keys)
@@ -401,27 +487,65 @@ sudo nano /etc/ssh/sshd_config
 sudo systemctl restart sshd
 ```
 
-## Development
+## Strategy Performance Expectations
 
-### Project Structure
+### Realistic Goals
+
+**Daily Performance**:
+- **Conservative**: 1-2% daily profit
+- **Optimistic**: 3-5% daily profit
+- **Risk**: Maximum 10% daily loss limit
+
+**Monthly Returns**:
+- **Target**: 30-50% monthly return
+- **Expected**: 15-25% monthly return
+- **Worst Case**: Break even or small loss
+
+### Risk Management
+
+- **Position Size**: Maximum 25% of capital per trade
+- **Daily Loss Limit**: 10% stop-loss
+- **Trade Frequency**: 10-20 trades per day
+- **Holding Time**: 5 minutes maximum per position
+
+### Monitoring Checklist
+
+**Daily**:
+- [ ] Check dashboard for P&L
+- [ ] Review executed trades
+- [ ] Monitor system health
+- [ ] Verify API connection
+
+**Weekly**:
+- [ ] Calculate weekly performance
+- [ ] Review win/loss ratio
+- [ ] Check for pattern in losing trades
+- [ ] Assess overall strategy effectiveness
+
+**Monthly**:
+- [ ] Review total P&L
+- [ ] Consider position size adjustments
+- [ ] Evaluate strategy modifications
+
+## Project Structure
 ```
 mangococo/
 ├── config/
-│   ├── .env.example
-│   ├── init-db.sql
-│   └── prometheus.yml
+│   ├── .env              # Your trading configuration
+│   └── init-db.sql       # Database schema
 ├── services/
-│   ├── market-data/      # Price streaming
-│   ├── prediction/       # ML predictions
-│   ├── signal/          # Trade signals
-│   ├── risk/            # Risk management
-│   ├── executor/        # Order execution
-│   ├── position/        # Portfolio tracking
-│   ├── api-gateway/     # REST API
-│   └── dashboard/       # React UI
-├── shared/              # Persistent data
-├── docker-compose.yml
-└── README.md
+│   ├── market-data/      # MEXC WebSocket streaming
+│   ├── prediction/       # RSI + Momentum signals
+│   ├── signal/          # Buy/sell signal generation
+│   ├── risk/            # Position & capital limits
+│   ├── executor/        # Order execution on MEXC
+│   ├── position/        # P&L tracking
+│   ├── api-gateway/     # REST API hub
+│   └── dashboard/       # Live monitoring UI
+├── shared/              # Persistent data storage
+├── docker-compose.yml   # Container orchestration
+├── test_trading.py      # Trading capability test
+└── README.md           # This guide
 ```
 
 ### Adding New Trading Pairs

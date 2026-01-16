@@ -253,10 +253,28 @@ htmlcov/
 # Your implementation documentation (can keep if you want)
 # mangococo_complete_implementation-Final.md
 
+# Claude Code IDE files (contains sensitive session data)
+.claude/
+*.claude
+
+# Trading configuration with API keys
+config/trading.env
+trading.env
+
+# Test and utility scripts with hardcoded credentials (for local dev only)
+test_*.py
+*_test.py
+buy_*.py
+force_*.py
+sync_*.py
+check_orders.py
+quick_monitor.py
+
 # Trading data and history
 trading_history/
 trade_logs/
 positions_history/
+valid_trading_pairs.txt
 
 # Performance data
 performance_reports/

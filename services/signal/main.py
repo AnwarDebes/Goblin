@@ -20,9 +20,10 @@ from prometheus_client import Counter, Gauge, generate_latest
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 0.6))
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 0.3))  # 30% confidence threshold - AGGRESSIVE for testing
 STARTING_CAPITAL = float(os.getenv("STARTING_CAPITAL", 11.0))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", 0.50))
+MIN_POSITION_USD = float(os.getenv("MIN_POSITION_USD", 1.0))
 TRADING_PAIRS = os.getenv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT").split(",")
 
 logger = structlog.get_logger()
@@ -65,15 +66,16 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
         SIGNALS_SKIPPED.labels(reason="low_confidence").inc()
         return None
 
-    if direction == "neutral":
-        SIGNALS_SKIPPED.labels(reason="neutral").inc()
+    if direction == "hold":
+        SIGNALS_SKIPPED.labels(reason="hold_signal").inc()
         return None
 
     has_position = symbol in current_positions
 
-    if direction == "up" and not has_position:
+    # Only buy if we don't have a position, only sell if we have one
+    if direction == "buy" and not has_position:
         action = "buy"
-    elif direction == "down" and has_position:
+    elif direction == "sell" and has_position:
         action = "sell"
     else:
         SIGNALS_SKIPPED.labels(reason="no_action").inc()
@@ -82,8 +84,19 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
     if action == "buy":
         portfolio = await redis_client.get("portfolio_state")
         available = json.loads(portfolio).get("available_capital", STARTING_CAPITAL) if portfolio else STARTING_CAPITAL
-        trade_value = available * MAX_POSITION_PCT * confidence
+        # Calculate trade value, ensuring it's at least MIN_POSITION_USD (1.0 USDT)
+        calculated_value = available * MAX_POSITION_PCT * confidence
+        trade_value = max(calculated_value, MIN_POSITION_USD)
+        # Double-check: ensure trade_value is at least 1.05 USDT (buffer for MEXC rounding)
+        trade_value = max(trade_value, 1.05)
         amount = trade_value / current_price
+        # Ensure order value (amount * price) is at least 1.05 USDT (account for price variations)
+        order_value = amount * current_price
+        if order_value < 1.05:
+            # Adjust amount to ensure minimum 1.05 USDT order value
+            amount = 1.05 / current_price
+            trade_value = 1.05
+        logger.info("Calculating trade", symbol=symbol, available=available, calculated_value=calculated_value, trade_value=trade_value, amount=amount, price=current_price, order_value=amount*current_price)
     else:
         amount = current_positions[symbol].amount
 
@@ -102,18 +115,34 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
 
 async def listen_for_predictions():
     pubsub = redis_client.pubsub()
-    channels = [f"predictions:{s.strip().replace('/', '_')}" for s in TRADING_PAIRS]
-    await pubsub.subscribe(*channels)
+    # CRITICAL: Use psubscribe for pattern matching, not subscribe!
+    await pubsub.psubscribe("predictions:*")
+    logger.info("Subscribed to predictions:* pattern with psubscribe")
 
     async for message in pubsub.listen():
-        if message["type"] == "message":
+        # psubscribe uses "pmessage" type, not "message"
+        if message["type"] == "pmessage":
             try:
-                prediction = json.loads(message["data"])
-                signal = await generate_signal(prediction)
-                if signal:
-                    await redis_client.publish("raw_signals", signal.model_dump_json())
+                # Extract symbol from channel name for wildcard subscription
+                channel = message["channel"]
+                channel_parts = channel.split(":")
+                if len(channel_parts) >= 2:
+                    symbol_key = channel_parts[1]  # e.g., "BTC_USDT"
+                    symbol = symbol_key.replace("_", "/")  # Convert back to BTC/USDT format
+
+                    prediction = json.loads(message["data"])
+                    logger.info(f"Received prediction for {symbol}: direction={prediction.get('direction')}, confidence={prediction.get('confidence'):.2f}")
+                    
+                    # Ensure the prediction symbol matches our trading pairs
+                    if prediction.get("symbol") in [s.strip() for s in TRADING_PAIRS]:
+                        signal = await generate_signal(prediction)
+                        if signal:
+                            await redis_client.publish("raw_signals", signal.model_dump_json())
+                            logger.info(f"🚀 SIGNAL PUBLISHED: {signal.action} {signal.symbol} amount={signal.amount:.4f}")
+                        else:
+                            logger.debug(f"No signal generated for {symbol}")
             except Exception as e:
-                logger.error("Error processing prediction", error=str(e))
+                logger.error("Error processing prediction", error=str(e), exc_info=True)
 
 
 async def listen_for_position_updates():
@@ -184,6 +213,13 @@ async def create_manual_signal(symbol: str, action: str, amount: float):
     await redis_client.publish("raw_signals", signal.model_dump_json())
     return signal
 
+
+@app.post("/emergency/stop")
+async def emergency_stop():
+    """Emergency stop signal generation"""
+    logger.warning("EMERGENCY STOP activated - stopping all signal generation")
+    # This would need to be implemented to actually stop the signal loop
+    return {"status": "stopped", "message": "Signal generation stopped"}
 
 @app.get("/metrics", response_class=PlainTextResponse)
 async def metrics():

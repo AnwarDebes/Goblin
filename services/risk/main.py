@@ -25,6 +25,9 @@ MIN_POSITION_USD = float(os.getenv("MIN_POSITION_USD", 1.0))
 MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", 0.20))
 MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", 2))
 MIN_TIME_BETWEEN_TRADES = int(os.getenv("MIN_TIME_BETWEEN_TRADES", 60))
+PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", 0.001))  # 0.1% profit target
+MAX_TRADE_LOSS_PCT = float(os.getenv("MAX_TRADE_LOSS_PCT", 0.005))  # 0.5% stop loss
+MAX_HOLD_TIME_MINUTES = float(os.getenv("MAX_HOLD_TIME_MINUTES", 0.25))  # 15 seconds max hold
 
 logger = structlog.get_logger()
 
@@ -143,6 +146,20 @@ async def lifespan(app: FastAPI):
     redis_client = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
     await redis_client.ping()
     await load_portfolio()
+    
+    # Store risk parameters in Redis for position service to use
+    risk_parameters = {
+        "PROFIT_TARGET_PCT": PROFIT_TARGET_PCT,
+        "MAX_TRADE_LOSS_PCT": MAX_TRADE_LOSS_PCT,
+        "MAX_HOLD_TIME_MINUTES": MAX_HOLD_TIME_MINUTES,
+        "MAX_POSITION_PCT": MAX_POSITION_PCT,
+        "MIN_POSITION_USD": MIN_POSITION_USD,
+        "MAX_DAILY_LOSS_PCT": MAX_DAILY_LOSS_PCT,
+        "MAX_OPEN_POSITIONS": MAX_OPEN_POSITIONS,
+        "MIN_TIME_BETWEEN_TRADES": MIN_TIME_BETWEEN_TRADES
+    }
+    await redis_client.set("risk_parameters", json.dumps(risk_parameters))
+    logger.info("Risk parameters stored in Redis", parameters=risk_parameters)
 
     listener_task = asyncio.create_task(listen_for_signals())
 
@@ -163,6 +180,28 @@ async def health():
 
 @app.get("/portfolio")
 async def get_portfolio():
+    """Automatically calculate portfolio from positions and MEXC balance"""
+    # Load current portfolio state from Redis (updated by executor/position services)
+    portfolio_state_str = await redis_client.get("portfolio_state")
+    if portfolio_state_str:
+        portfolio_data = json.loads(portfolio_state_str)
+        # Update local portfolio object
+        portfolio.available_capital = portfolio_data.get("available_capital", portfolio.available_capital)
+        portfolio.open_positions = portfolio_data.get("open_positions", 0)
+        portfolio.daily_pnl = portfolio_data.get("daily_pnl", 0.0)
+        portfolio.last_trade_time = portfolio_data.get("last_trade_time", portfolio.last_trade_time)
+        
+        # Calculate total capital from positions
+        positions_data = await redis_client.hgetall("positions")
+        total_position_value = 0
+        for symbol, pos_data in positions_data.items():
+            pos = json.loads(pos_data)
+            if pos.get("status") == "open":
+                total_position_value += pos.get("current_price", 0) * pos.get("amount", 0)
+        
+        # Total capital = available USDT + position values
+        portfolio.total_capital = portfolio.available_capital + total_position_value
+    
     return portfolio
 
 
