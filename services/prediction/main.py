@@ -139,7 +139,7 @@ async def make_prediction(symbol: str) -> Optional[PredictionResponse]:
     # Using 0.05% threshold for maximum signal generation - REAL TRADING TEST
 
     # BUY signal: Price INCREASED 0.05% or more (momentum - ride the wave!)
-    if momentum_pct >= 0.05:
+    if momentum_pct >= 0.01:  # Very aggressive: buy on any upward movement >= 0.01%
         direction = "buy"
         confidence = min(0.95, 0.7 + abs(momentum_pct) * 2)  # 70-95% confidence, aggressive
         logger.info(f"🟢 BUY SIGNAL: {symbol} up {momentum_pct:.3f}% - AGGRESSIVE momentum trading!")

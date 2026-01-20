@@ -19,7 +19,7 @@ from prometheus_client import Gauge, generate_latest
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", 0.001))  # 0.1% profit target
+PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", 0.002))  # 0.2% profit target
 MAX_TRADE_LOSS_PCT = float(os.getenv("MAX_TRADE_LOSS_PCT", 0.005))  # 0.5% stop loss
 MAX_HOLD_TIME_MINUTES = float(os.getenv("MAX_HOLD_TIME_MINUTES", 0.25))  # 15 seconds max hold
 
@@ -186,7 +186,8 @@ async def update_portfolio_state():
 
 async def listen_for_orders():
     pubsub = redis_client.pubsub()
-    await pubsub.subscribe("order_updates", "filled_orders")
+    # Only subscribe to filled_orders - avoid double-processing since executor publishes to both channels
+    await pubsub.subscribe("filled_orders")
     async for message in pubsub.listen():
         if message["type"] == "message":
             try:
@@ -205,11 +206,32 @@ async def listen_for_orders():
 async def close_position(symbol: str, reason: str):
     """Close a position by publishing a sell signal"""
     if symbol not in positions or positions[symbol].status != "open":
+        logger.debug("Position not eligible for closing", symbol=symbol, status=positions.get(symbol, {}).status)
         return
-    
+
+    # IDEMPOTENCY: Check Redis to ensure we haven't already started closing this position
+    redis_pos_data = await redis_client.hget("positions", symbol)
+    if redis_pos_data:
+        redis_pos = json.loads(redis_pos_data)
+        if redis_pos.get("status") in ["closing", "closed"]:
+            logger.debug("Position already being closed", symbol=symbol, status=redis_pos.get("status"))
+            return
+
     pos = positions[symbol]
     close_side = "sell" if pos.side == "long" else "buy"
-    
+
+    # ATOMIC IDEMPOTENT UPDATE: Use Redis transaction to ensure only one close operation
+    close_id = f"close_{symbol}_{int(datetime.utcnow().timestamp() * 1000)}"
+
+    # Check if this close operation has already been initiated
+    existing_close = await redis_client.get(f"close_initiated:{symbol}")
+    if existing_close and existing_close != close_id:
+        logger.debug("Close operation already initiated", symbol=symbol, existing_close_id=existing_close)
+        return
+
+    # Mark as closing in Redis atomically
+    await redis_client.set(f"close_initiated:{symbol}", close_id, ex=300)  # Expire in 5 minutes
+
     # Mark position as "closing" IMMEDIATELY to prevent repeated sell signals
     pos.status = "closing"
     positions[symbol] = pos

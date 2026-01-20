@@ -23,6 +23,7 @@ MEXC_SECRET_KEY = os.getenv("MEXC_SECRET_KEY", "")
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
+MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() == "true"  # Enable mock trading for testing
 
 logger = structlog.get_logger()
 
@@ -95,34 +96,29 @@ async def execute_order(request: OrderRequest) -> OrderResponse:
     logger.info("Executing order", order_id=order_id, symbol=request.symbol, side=request.side, amount=request.amount, price=request.price)
 
     try:
-        # Check if we have valid API keys
+        # Check if we have valid API keys and not in mock mode
         has_valid_keys = hasattr(exchange, 'apiKey') and exchange.apiKey and exchange.apiKey != "your_mexc_api_key_here"
+        use_real_trading = has_valid_keys and not MOCK_MODE
 
-        if has_valid_keys:
-            # Real trading mode
+        if MOCK_MODE:
+            logger.warning(f"MOCK MODE: Simulating {request.side} order for {request.symbol} - using REAL prices")
+
+        # ALWAYS fetch real prices from MEXC (even in mock mode)
+        try:
             ticker = await exchange.fetch_ticker(request.symbol)
             # Use ask for buy, bid for sell, fallback to last price if None
             if request.side == "buy":
                 current_price = ticker.get("ask") or ticker.get("last") or ticker.get("close")
             else:
                 current_price = ticker.get("bid") or ticker.get("last") or ticker.get("close")
-            
+
             if current_price is None:
                 raise ValueError(f"Could not get price for {request.symbol}")
-        else:
-            # Testing mode - simulate prices
-            logger.warning("No valid API keys - simulating trade for testing")
-            # Use a simulated price based on common crypto values
-            base_prices = {
-                "BTC/USDT": 45000,
-                "ETH/USDT": 2400,
-                "SOL/USDT": 95,
-                "BNB/USDT": 305,
-                "ADA/USDT": 0.45,
-                "XRP/USDT": 0.55,
-                "DOGE/USDT": 0.08
-            }
-            current_price = base_prices.get(request.symbol, 1.0)  # Default to $1 if unknown
+
+            logger.info(f"Real MEXC price for {request.symbol}: ${current_price}")
+        except Exception as price_error:
+            logger.error(f"Failed to fetch real price for {request.symbol}: {price_error}")
+            raise ValueError(f"Could not get real price for {request.symbol}: {price_error}")
         
         # Use current market price for limit orders
         if request.order_type != "market":
@@ -130,19 +126,39 @@ async def execute_order(request: OrderRequest) -> OrderResponse:
         
         # Ensure order value is at least 1.05 USDT (MEXC minimum with larger buffer for rounding/precision)
         min_order_value = 1.05
-        order_value = request.amount * current_price
-        
+
+        # For BUY orders: amount from signal is USDT value, convert to coin quantity
+        # For SELL orders: amount is already coin quantity
+        if request.side == "buy":
+            # Signal sends USDT value (e.g., 1.5 means $1.50), convert to coin quantity
+            usdt_amount = request.amount
+            coin_quantity = usdt_amount / current_price
+            request.amount = coin_quantity
+            order_value = usdt_amount  # Original USDT value
+            logger.info(f"BUY order: Converting ${usdt_amount:.4f} USDT to {coin_quantity:.8f} coins @ ${current_price}")
+        else:
+            # SELL orders: amount is coin quantity
+            order_value = request.amount * current_price
+
         if order_value < min_order_value:
             # Recalculate amount based on current market price to ensure minimum
-            original_amount = request.amount
+            original_coin_amount = request.amount
             request.amount = min_order_value / current_price
-            order_value = request.amount * current_price
-            logger.warning("Adjusted order to meet minimum", original_amount=original_amount, original_value=original_amount*current_price, new_amount=request.amount, new_value=order_value, price=current_price)
+            order_value = min_order_value
+            logger.warning("Adjusted order to meet minimum", original_coin_amount=original_coin_amount, new_coin_amount=request.amount, order_value=order_value, price=current_price)
         
         logger.info("Order details", amount=request.amount, price=request.price, order_value=order_value)
-        
+
+        # IDEMPOTENCY: Check if this signal has already been executed
+        if request.signal_id:
+            existing_order = await redis_client.hget("signal_orders", request.signal_id)
+            if existing_order:
+                logger.info("Signal already processed, skipping duplicate order", signal_id=request.signal_id)
+                # Return the existing order response
+                return json.loads(existing_order)
+
         # Execute or simulate order
-        if has_valid_keys:
+        if use_real_trading:
             # Real trading
             if request.order_type == "market":
                 if request.side == "buy":
@@ -172,9 +188,14 @@ async def execute_order(request: OrderRequest) -> OrderResponse:
 
         # For limit orders, check if they're filled immediately or poll status
         order_status = order.get("status", "unknown")
-        filled_amount = order.get("filled", 0)
-        order_price = order.get("price") or order.get("average") or current_price
-        order_cost = order.get("cost") or (filled_amount * order_price)
+        # Handle None values properly - MEXC sometimes returns None for these fields
+        filled_amount = order.get("filled") if order.get("filled") is not None else request.amount
+        order_price = order.get("price") or order.get("average") or current_price or 0
+        if order_price is None or order_price == 0:
+            order_price = current_price  # Fallback to fetched price
+        order_cost = order.get("cost")
+        if order_cost is None or order_cost == 0:
+            order_cost = (filled_amount or 0) * (order_price or current_price or 1)
         
         # If limit order is open, use market order for immediate execution
         if request.order_type == "limit" and order_status in ["open", "new"]:
@@ -187,7 +208,7 @@ async def execute_order(request: OrderRequest) -> OrderResponse:
                     except:
                         pass
                 # Place market order for immediate execution
-                if has_valid_keys:
+                if use_real_trading:
                     market_order = await exchange.create_market_order(request.symbol, request.side, request.amount)
                 else:
                     # Simulate market order
@@ -200,9 +221,13 @@ async def execute_order(request: OrderRequest) -> OrderResponse:
                         "average": current_price
                     }
                 order_status = market_order.get("status", "closed")
-                filled_amount = market_order.get("filled", request.amount)
-                order_price = market_order.get("price") or market_order.get("average") or current_price
-                order_cost = market_order.get("cost") or (filled_amount * order_price)
+                filled_amount = market_order.get("filled") if market_order.get("filled") is not None else request.amount
+                order_price = market_order.get("price") or market_order.get("average") or current_price or 0
+                if order_price is None or order_price == 0:
+                    order_price = current_price
+                order_cost = market_order.get("cost")
+                if order_cost is None or order_cost == 0:
+                    order_cost = (filled_amount or 0) * (order_price or current_price or 1)
                 order = market_order
             except Exception as e:
                 logger.warning("Market order conversion failed, using limit order", error=str(e))
@@ -220,6 +245,10 @@ async def execute_order(request: OrderRequest) -> OrderResponse:
             price=order_price, filled=filled_amount, cost=order_cost,
             timestamp=datetime.utcnow().isoformat()
         )
+
+        # IDEMPOTENCY: Store order response by signal_id to prevent duplicate processing
+        if request.signal_id:
+            await redis_client.hset("signal_orders", request.signal_id, response.model_dump_json())
 
         # Always publish order updates - position service will handle filled orders
         await redis_client.publish("order_updates", response.model_dump_json())
@@ -246,25 +275,43 @@ async def listen_for_validated_signals():
     await pubsub.subscribe("raw_signals")  # Listen to the correct channel that signals publish to
     logger.info("Executor subscribed to raw_signals channel")
 
+    processed_signal_ids = set()  # Track processed signals for idempotency
+
     async for message in pubsub.listen():
         if message["type"] == "message":
             try:
                 signal = json.loads(message["data"])
+                signal_id = signal.get("signal_id", "")
+
+                # IDEMPOTENCY: Check if this signal has already been processed
+                if signal_id and signal_id in processed_signal_ids:
+                    logger.debug("Signal already processed, skipping", signal_id=signal_id)
+                    continue
+
                 action = signal.get("action", "unknown")
                 symbol = signal.get("symbol", "unknown")
                 amount = signal.get("amount", 0)
-                
+
                 # Log ALL received signals, especially sells
                 if action == "sell":
                     logger.warning(f"SELL SIGNAL RECEIVED: {symbol} amount={amount}")
                 else:
                     logger.debug(f"Signal received: {action} {symbol} amount={amount}")
-                
+
                 request = OrderRequest(
-                    signal_id=signal.get("signal_id", ""), symbol=symbol,
+                    signal_id=signal_id, symbol=symbol,
                     side=action, amount=amount, price=signal.get("price")
                 )
+
+                # Execute order
                 await execute_order(request)
+
+                # IDEMPOTENCY: Mark signal as processed after execution attempt
+                if signal_id:
+                    processed_signal_ids.add(signal_id)
+                    # Keep only recent signals to prevent memory growth
+                    if len(processed_signal_ids) > 1000:
+                        processed_signal_ids.pop()
             except Exception as e:
                 logger.error("Failed to execute signal", error=str(e), signal_data=message.get("data", "")[:200])
 
@@ -279,7 +326,12 @@ async def lifespan(app: FastAPI):
 
     # Initialize MEXC exchange - handle missing/invalid API keys gracefully
     if MEXC_API_KEY and MEXC_SECRET_KEY and MEXC_API_KEY != "your_mexc_api_key_here":
-        exchange = ccxt.mexc({"apiKey": MEXC_API_KEY, "secret": MEXC_SECRET_KEY, "enableRateLimit": True})
+        exchange = ccxt.mexc({
+            "apiKey": MEXC_API_KEY,
+            "secret": MEXC_SECRET_KEY,
+            "enableRateLimit": True,
+            "options": {"createMarketBuyOrderRequiresPrice": False}
+        })
         try:
             await exchange.load_markets()
             logger.info("MEXC exchange initialized with API keys and markets loaded")

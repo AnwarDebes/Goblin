@@ -54,6 +54,7 @@ class Position(BaseModel):
 redis_client: Optional[aioredis.Redis] = None
 current_positions: Dict[str, Position] = {}
 last_signals: Dict[str, Signal] = {}
+processed_signals: set = set()  # Track processed signal IDs for idempotency
 
 
 async def generate_signal(prediction: dict) -> Optional[Signal]:
@@ -61,6 +62,12 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
     direction = prediction["direction"]
     confidence = prediction["confidence"]
     current_price = prediction["current_price"]
+    prediction_id = prediction.get("id", f"{symbol}_{direction}_{int(current_price * 1000)}")
+
+    # IDEMPOTENCY: Check if this prediction has already been processed
+    if prediction_id in processed_signals:
+        logger.debug("Prediction already processed, skipping", prediction_id=prediction_id)
+        return None
 
     if confidence < CONFIDENCE_THRESHOLD:
         SIGNALS_SKIPPED.labels(reason="low_confidence").inc()
@@ -82,21 +89,21 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
         return None
 
     if action == "buy":
+        # Get available balance from Redis (executor syncs this with actual balance)
         portfolio = await redis_client.get("portfolio_state")
         available = json.loads(portfolio).get("available_capital", STARTING_CAPITAL) if portfolio else STARTING_CAPITAL
-        # Calculate trade value, ensuring it's at least MIN_POSITION_USD (1.0 USDT)
-        calculated_value = available * MAX_POSITION_PCT * confidence
-        trade_value = max(calculated_value, MIN_POSITION_USD)
-        # Double-check: ensure trade_value is at least 1.05 USDT (buffer for MEXC rounding)
-        trade_value = max(trade_value, 1.05)
-        amount = trade_value / current_price
-        # Ensure order value (amount * price) is at least 1.05 USDT (account for price variations)
-        order_value = amount * current_price
-        if order_value < 1.05:
-            # Adjust amount to ensure minimum 1.05 USDT order value
-            amount = 1.05 / current_price
-            trade_value = 1.05
-        logger.info("Calculating trade", symbol=symbol, available=available, calculated_value=calculated_value, trade_value=trade_value, amount=amount, price=current_price, order_value=amount*current_price)
+
+        # STRICT $1.50 TRADE LIMIT - Never exceed this amount
+        if available < 1.5:
+            logger.info("Insufficient USDT balance for $1.50 trade, skipping buy signal", balance=available)
+            return None
+
+        # STRICT ENFORCEMENT: Always exactly $1.50, never more
+        trade_value = 1.5  # EXACTLY $1.50 per trade - no variations allowed
+
+        # For MEXC market buy orders, send the USDT cost amount directly
+        amount = trade_value  # Send EXACTLY $1.50, not coin quantity
+        logger.info("Calculating trade", symbol=symbol, available=available, trade_value=trade_value, amount=amount, price=current_price)
     else:
         amount = current_positions[symbol].amount
 
@@ -108,7 +115,16 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
 
     SIGNALS_GENERATED.labels(symbol=symbol, action=action).inc()
     last_signals[symbol] = signal
-    logger.info("Signal generated", signal_id=signal.signal_id, symbol=symbol, action=action)
+
+    # IDEMPOTENCY: Mark this prediction as processed
+    processed_signals.add(prediction_id)
+
+    # Keep only recent processed signals to prevent memory growth
+    if len(processed_signals) > 1000:
+        # Remove oldest signals (simple FIFO)
+        processed_signals.pop()
+
+    logger.info("Signal generated", signal_id=signal.signal_id, symbol=symbol, action=action, prediction_id=prediction_id)
 
     return signal
 
