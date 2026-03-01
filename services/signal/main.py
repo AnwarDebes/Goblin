@@ -59,12 +59,44 @@ last_signals: Dict[str, Signal] = {}
 processed_signals: set = set()  # Track processed signal IDs for idempotency
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 async def generate_signal(prediction: dict) -> Optional[Signal]:
-    symbol = prediction["symbol"]
-    direction = prediction["direction"]
-    confidence = prediction["confidence"]
-    current_price = prediction["current_price"]
-    prediction_id = prediction.get("id", f"{symbol}_{direction}_{int(current_price * 1000)}")
+    symbol = prediction.get("symbol")
+    direction = prediction.get("direction", "hold")
+    confidence = _safe_float(prediction.get("confidence"), 0.0)
+    current_price = _safe_float(prediction.get("current_price"), 0.0)
+
+    # Backward compatibility: older payloads may provide "price" instead of "current_price"
+    if current_price <= 0:
+        current_price = _safe_float(prediction.get("price"), 0.0)
+
+    # Final fallback: derive latest price from market-data cache if payload omitted it
+    if current_price <= 0 and symbol:
+        try:
+            tick_raw = await redis_client.hget("latest_ticks", symbol)
+            if tick_raw:
+                tick = json.loads(tick_raw)
+                current_price = _safe_float(tick.get("price"), 0.0)
+        except Exception:
+            pass
+
+    if not symbol or current_price <= 0:
+        SIGNALS_SKIPPED.labels(reason="missing_price").inc()
+        logger.warning("Prediction missing symbol or usable price", symbol=symbol)
+        return None
+
+    prediction_id = prediction.get("id")
+    if not prediction_id:
+        timestamp_hint = prediction.get("timestamp", "")
+        prediction_id = f"{symbol}_{direction}_{timestamp_hint or int(current_price * 1000)}"
 
     # IDEMPOTENCY: Check if this prediction has already been processed
     if prediction_id in processed_signals:
@@ -167,7 +199,11 @@ async def listen_for_predictions():
                     symbol = symbol_key.replace("_", "/")  # Convert back to BTC/USDT format
 
                     prediction = json.loads(message["data"])
-                    logger.info(f"Received prediction for {symbol}: direction={prediction.get('direction')}, confidence={prediction.get('confidence'):.2f}")
+                    confidence = _safe_float(prediction.get("confidence"), 0.0)
+                    logger.info(
+                        f"Received prediction for {symbol}: "
+                        f"direction={prediction.get('direction')}, confidence={confidence:.2f}"
+                    )
                     
                     # Ensure the prediction symbol matches our trading pairs
                     if prediction.get("symbol") in [s.strip() for s in TRADING_PAIRS]:

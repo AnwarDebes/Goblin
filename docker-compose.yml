@@ -1,5 +1,7 @@
 services:
+  # =============================================
   # Infrastructure
+  # =============================================
   redis:
     image: redis:7-alpine
     container_name: mc-redis
@@ -39,24 +41,254 @@ services:
   # =============================================
   # Core Trading Services
   # =============================================
-
   market-data:
     build: ./services/market-data
     container_name: mc-market-data
     restart: unless-stopped
     env_file: ./config/trading.env
+    environment:
+      REDIS_HOST: redis
+      POSTGRES_HOST: timescaledb
+      TRADING_PAIRS_FILE: /config/trading_pairs.txt
     ports:
       - "8001:8001"
     volumes:
       - ./config:/config
-    environment:
-      - REDIS_HOST=redis
-      - POSTGRES_HOST=timescaledb
-      - DB_ENABLED=true
-      - WS_ENABLED=true
-      - WS_TOP_SYMBOLS=100
     depends_on:
       redis:
         condition: service_healthy
       timescaledb:
         condition: service_healthy
+
+  feature-store:
+    build: ./services/feature-store
+    container_name: mc-feature-store
+    restart: unless-stopped
+    env_file: ./config/trading.env
+    environment:
+      REDIS_HOST: redis
+      POSTGRES_HOST: timescaledb
+    ports:
+      - "8007:8007"
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      market-data:
+        condition: service_started
+
+  prediction:
+    build: ./services/prediction
+    container_name: mc-prediction
+    restart: unless-stopped
+    env_file: ./config/trading.env
+    environment:
+      REDIS_HOST: redis
+      FEATURE_STORE_URL: http://feature-store:8007
+      MODEL_DIR: /app/shared/models
+      TRADING_PAIRS_FILE: /config/trading_pairs.txt
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./shared/models:/app/shared/models
+      - ./config:/config:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      feature-store:
+        condition: service_started
+      market-data:
+        condition: service_started
+
+  signal:
+    build: ./services/signal
+    container_name: mc-signal
+    restart: unless-stopped
+    env_file: ./config/trading.env
+    environment:
+      REDIS_HOST: redis
+      TRADING_PAIRS_FILE: /config/trading_pairs.txt
+    ports:
+      - "8003:8000"
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      prediction:
+        condition: service_started
+      executor:
+        condition: service_started
+      position:
+        condition: service_started
+
+  risk:
+    build: ./services/risk
+    container_name: mc-risk
+    restart: unless-stopped
+    env_file: ./config/trading.env
+    environment:
+      REDIS_HOST: redis
+    ports:
+      - "8004:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  portfolio-optimizer:
+    build: ./services/portfolio-optimizer
+    container_name: mc-portfolio-optimizer
+    restart: unless-stopped
+    env_file: ./config/trading.env
+    environment:
+      REDIS_HOST: redis
+      POSTGRES_HOST: timescaledb
+    ports:
+      - "8010:8010"
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      risk:
+        condition: service_started
+
+  executor:
+    build: ./services/executor
+    container_name: mc-executor
+    restart: unless-stopped
+    env_file: ./config/trading.env
+    environment:
+      REDIS_HOST: redis
+      SIGNAL_CHANNEL: sized_signals
+    ports:
+      - "8005:8005"
+    depends_on:
+      redis:
+        condition: service_healthy
+      risk:
+        condition: service_started
+      portfolio-optimizer:
+        condition: service_started
+
+  position:
+    build: ./services/position
+    container_name: mc-position
+    restart: unless-stopped
+    env_file: ./config/trading.env
+    environment:
+      REDIS_HOST: redis
+    ports:
+      - "8006:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      risk:
+        condition: service_started
+      executor:
+        condition: service_started
+
+  # =============================================
+  # Intelligence Services
+  # =============================================
+  sentiment-analysis:
+    build: ./services/sentiment-analysis
+    container_name: mc-sentiment-analysis
+    restart: unless-stopped
+    env_file: ./config/trading.env
+    environment:
+      REDIS_HOST: redis
+      POSTGRES_HOST: timescaledb
+    ports:
+      - "8008:8008"
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+
+  trend-analysis:
+    build: ./services/trend-analysis
+    container_name: mc-trend-analysis
+    restart: unless-stopped
+    env_file: ./config/trading.env
+    environment:
+      REDIS_HOST: redis
+      POSTGRES_HOST: timescaledb
+    ports:
+      - "8009:8009"
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      sentiment-analysis:
+        condition: service_started
+
+  # =============================================
+  # Analytics + API + UI
+  # =============================================
+  backtesting:
+    build: ./services/backtesting
+    container_name: mc-backtesting
+    restart: unless-stopped
+    env_file: ./config/trading.env
+    environment:
+      REDIS_HOST: redis
+      POSTGRES_HOST: timescaledb
+    ports:
+      - "8011:8011"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  api-gateway:
+    build: ./services/api-gateway
+    container_name: mc-api-gateway
+    restart: unless-stopped
+    env_file: ./config/trading.env
+    environment:
+      REDIS_HOST: redis
+      POSTGRES_HOST: timescaledb
+    ports:
+      - "8080:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      market-data:
+        condition: service_started
+      prediction:
+        condition: service_started
+      signal:
+        condition: service_started
+      risk:
+        condition: service_started
+      executor:
+        condition: service_started
+      position:
+        condition: service_started
+      feature-store:
+        condition: service_started
+      sentiment-analysis:
+        condition: service_started
+      trend-analysis:
+        condition: service_started
+      portfolio-optimizer:
+        condition: service_started
+      backtesting:
+        condition: service_started
+
+  dashboard:
+    build: ./dashboard
+    container_name: mc-dashboard
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      api-gateway:
+        condition: service_started

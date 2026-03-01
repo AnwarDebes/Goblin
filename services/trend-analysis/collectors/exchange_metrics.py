@@ -31,6 +31,7 @@ class ExchangeMetricsCollector:
         self.pairs = pairs or TRADING_PAIRS
         self._exchange = None
         self._prev_oi: Dict[str, float] = {}
+        self._derivative_symbols: Dict[str, str] = {}
 
     async def _get_exchange(self):
         if self._exchange is None:
@@ -54,6 +55,32 @@ class ExchangeMetricsCollector:
                 return None
         return self._exchange
 
+    def _resolve_derivative_symbol(self, pair: str) -> str:
+        """
+        Resolve a spot pair (e.g. BTC/USDT) to a derivative market symbol
+        supported by funding/open-interest endpoints (e.g. BTC/USDT:USDT).
+        """
+        if pair in self._derivative_symbols:
+            return self._derivative_symbols[pair]
+
+        exchange = self._exchange
+        if exchange is None or not getattr(exchange, "markets", None):
+            self._derivative_symbols[pair] = pair
+            return pair
+
+        base, quote = pair.split("/")
+        resolved = pair
+
+        for symbol, market in exchange.markets.items():
+            if market.get("base") != base or market.get("quote") != quote:
+                continue
+            if market.get("swap") or market.get("future"):
+                resolved = symbol
+                break
+
+        self._derivative_symbols[pair] = resolved
+        return resolved
+
     async def close(self):
         if self._exchange:
             await self._exchange.close()
@@ -72,10 +99,11 @@ class ExchangeMetricsCollector:
             pair = pair.strip()
             try:
                 metrics = ExchangeMetrics(symbol=pair, timestamp=now)
+                exchange_symbol = self._resolve_derivative_symbol(pair)
 
                 # Fetch funding rate
                 try:
-                    funding = await exchange.fetch_funding_rate(pair)
+                    funding = await exchange.fetch_funding_rate(exchange_symbol)
                     if funding and "fundingRate" in funding:
                         metrics.funding_rate = float(funding["fundingRate"])
                 except Exception as e:
@@ -84,9 +112,16 @@ class ExchangeMetricsCollector:
                 # Fetch open interest
                 try:
                     if hasattr(exchange, "fetch_open_interest"):
-                        oi_data = await exchange.fetch_open_interest(pair)
-                        if oi_data and "openInterestValue" in oi_data:
-                            current_oi = float(oi_data["openInterestValue"])
+                        oi_data = await exchange.fetch_open_interest(exchange_symbol)
+                        oi_value = None
+                        if oi_data:
+                            oi_value = (
+                                oi_data.get("openInterestValue")
+                                or oi_data.get("openInterestAmount")
+                                or oi_data.get("openInterest")
+                            )
+                        if oi_value is not None:
+                            current_oi = float(oi_value)
                             prev_oi = self._prev_oi.get(pair)
                             if prev_oi is not None and prev_oi > 0:
                                 metrics.open_interest_change = round(
@@ -99,10 +134,12 @@ class ExchangeMetricsCollector:
                 # Fetch long/short ratio (exchange-specific, not all support this)
                 try:
                     if hasattr(exchange, "fetch_long_short_ratio_history"):
-                        ls_data = await exchange.fetch_long_short_ratio_history(pair, limit=1)
+                        ls_data = await exchange.fetch_long_short_ratio_history(exchange_symbol, limit=1)
                         if ls_data and len(ls_data) > 0:
                             latest = ls_data[-1]
-                            metrics.long_short_ratio = float(latest.get("longShortRatio", 1.0))
+                            ratio = latest.get("longShortRatio")
+                            if ratio is not None:
+                                metrics.long_short_ratio = float(ratio)
                 except Exception as e:
                     logger.debug("long_short_unavailable", symbol=pair, error=str(e))
 

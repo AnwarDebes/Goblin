@@ -286,10 +286,15 @@ async def lifespan(app: FastAPI):
         TRADING_PAIRS = [s.strip() for s in os.getenv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT").split(",") if s.strip()]
 
     # Split symbols between WebSocket and REST
-    if WS_ENABLED and len(TRADING_PAIRS) > 0:
+    ws_supported = WS_ENABLED and exchange_adapter.supports_watch_tickers()
+    if ws_supported and len(TRADING_PAIRS) > 0:
         ws_symbols, rest_symbols = split_symbols_for_streaming(TRADING_PAIRS, WS_TOP_SYMBOLS)
         logger.info(f"Symbol split: {len(ws_symbols)} WebSocket + {len(rest_symbols)} REST")
     else:
+        if WS_ENABLED and not ws_supported:
+            logger.warning(
+                "WebSocket disabled: exchange adapter does not support watch_tickers; using REST only"
+            )
         ws_symbols = []
         rest_symbols = TRADING_PAIRS
 

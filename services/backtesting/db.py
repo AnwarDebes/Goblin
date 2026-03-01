@@ -79,6 +79,31 @@ async def ensure_tables():
             );
         """)
 
+        # Compatibility migration for legacy init-db schema.
+        # init-db.sql defines backtest_runs with different columns
+        # (e.g. `parameters` instead of `params`, no symbols/initial_capital).
+        await conn.execute("""
+            ALTER TABLE backtest_runs
+            ADD COLUMN IF NOT EXISTS symbols TEXT[],
+            ADD COLUMN IF NOT EXISTS initial_capital DOUBLE PRECISION DEFAULT 10000,
+            ADD COLUMN IF NOT EXISTS final_capital DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS total_trades INT,
+            ADD COLUMN IF NOT EXISTS win_rate DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS sharpe_ratio DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS max_drawdown DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS profit_factor DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS params JSONB,
+            ADD COLUMN IF NOT EXISTS parameters JSONB,
+            ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+        """)
+
+        # Backfill `params` from legacy `parameters` when present.
+        await conn.execute("""
+            UPDATE backtest_runs
+            SET params = parameters
+            WHERE params IS NULL AND parameters IS NOT NULL
+        """)
+
         # Individual trade records for detailed analysis
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS backtest_trades (
@@ -127,12 +152,14 @@ async def create_run(
     params: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Insert a new backtest run and return its id."""
+    params_json = json.dumps(params) if params else "{}"
+
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO backtest_runs
-                (strategy_name, symbols, start_date, end_date, initial_capital, params)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+                (strategy_name, symbols, start_date, end_date, initial_capital, params, parameters)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $6::jsonb)
             RETURNING id
             """,
             strategy_name,
@@ -140,7 +167,7 @@ async def create_run(
             start_date,
             end_date,
             initial_capital,
-            json.dumps(params) if params else None,
+            params_json,
         )
     return row["id"]
 

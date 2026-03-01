@@ -23,6 +23,7 @@ def main():
     env = load_env()
     api_key = env.get("MEXC_API_KEY", "")
     api_secret = env.get("MEXC_SECRET_KEY", "")
+    paper_mode = env.get("PAPER_MODE", "false").lower() == "true"
     redis_host = env.get("REDIS_HOST", "localhost")
     if redis_host == "redis":
         redis_host = "localhost"  # When running script on host, Docker exposes 6379 on localhost
@@ -38,7 +39,10 @@ def main():
 
     # ---- 1. MEXC API (IP not blocked, credentials valid) ----
     print("\n[1] MEXC API (IP & credentials)...")
-    if not api_key or not api_secret or api_key == "your_mexc_api_key_here":
+    if paper_mode:
+        print("    SKIP: PAPER_MODE=true (private MEXC auth not required)")
+        results["mexc_api"] = "skipped_paper_mode"
+    elif not api_key or not api_secret or api_key == "your_mexc_api_key_here":
         print("    SKIP: No API keys in config/trading.env")
         results["mexc_api"] = "skipped"
     else:

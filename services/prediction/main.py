@@ -79,6 +79,7 @@ class PredictionResponse(BaseModel):
     direction: str
     confidence: float
     score: float
+    current_price: float
     mode: str  # "ml" or "legacy"
     breakdown: Dict[str, float] = {}
     tcn_direction: Optional[str] = None
@@ -228,6 +229,7 @@ def _legacy_predict(ticks: List[dict]) -> Optional[PredictionResponse]:
         direction=direction,
         confidence=round(confidence, 4),
         score=round({"buy": 0.5, "sell": -0.5, "hold": 0.0}.get(direction, 0.0), 4),
+        current_price=float(prices[-1]),
         mode="legacy",
         breakdown={"rsi": rsi, "momentum": momentum, "volume_ratio": vol_ratio},
     )
@@ -323,6 +325,7 @@ async def _ml_predict(symbol: str, ticks: List[dict]) -> Optional[PredictionResp
         direction=result.direction,
         confidence=result.confidence,
         score=result.score,
+        current_price=float(df["close"].iloc[-1]),
         mode="ml",
         breakdown=result.breakdown,
         tcn_direction=tcn_pred.direction if tcn_pred else None,

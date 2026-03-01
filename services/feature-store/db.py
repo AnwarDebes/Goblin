@@ -20,6 +20,29 @@ POSTGRES_USER = os.getenv("POSTGRES_USER", "mangococo")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
 
 _pool: Optional[asyncpg.Pool] = None
+_sentiment_mentions_column: Optional[str] = None
+
+
+def _to_float(value, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _timeframe_to_interval(timeframe: str) -> str:
+    mapping = {
+        "1m": "1 minute",
+        "5m": "5 minutes",
+        "15m": "15 minutes",
+        "30m": "30 minutes",
+        "1h": "1 hour",
+        "4h": "4 hours",
+        "1d": "1 day",
+    }
+    return mapping.get(timeframe, "1 minute")
 
 
 async def init_pool() -> asyncpg.Pool:
@@ -66,27 +89,58 @@ async def fetch_candles(
 
     try:
         async with _pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT time, open, high, low, close, volume
-                FROM candles
-                WHERE symbol = $1 AND timeframe = $2
-                ORDER BY time DESC
-                LIMIT $3
-                """,
-                symbol,
-                timeframe,
-                limit,
-            )
+            rows = []
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT time, open, high, low, close, volume
+                    FROM candles
+                    WHERE symbol = $1 AND timeframe = $2
+                    ORDER BY time DESC
+                    LIMIT $3
+                    """,
+                    symbol,
+                    timeframe,
+                    limit,
+                )
+            except asyncpg.UndefinedTableError:
+                rows = []
+
+            # Fallback path: derive candles from raw ticks when candles table is empty/unavailable.
+            if not rows:
+                interval = _timeframe_to_interval(timeframe)
+                rows = await conn.fetch(
+                    f"""
+                    WITH bucketed AS (
+                        SELECT
+                            time_bucket(INTERVAL '{interval}', time) AS bucket,
+                            first(price, time) AS open,
+                            max(price) AS high,
+                            min(price) AS low,
+                            last(price, time) AS close,
+                            sum(COALESCE(volume, 0)) AS volume
+                        FROM ticks
+                        WHERE symbol = $1
+                        GROUP BY bucket
+                        ORDER BY bucket DESC
+                        LIMIT $2
+                    )
+                    SELECT bucket AS time, open, high, low, close, volume
+                    FROM bucketed
+                    ORDER BY time DESC
+                    """,
+                    symbol,
+                    limit,
+                )
         # Return in chronological order (oldest first)
         return [
             {
                 "time": row["time"],
-                "open": row["open"],
-                "high": row["high"],
-                "low": row["low"],
-                "close": row["close"],
-                "volume": row["volume"],
+                "open": _to_float(row["open"]),
+                "high": _to_float(row["high"]),
+                "low": _to_float(row["low"]),
+                "close": _to_float(row["close"]),
+                "volume": _to_float(row["volume"]),
             }
             for row in reversed(rows)
         ]
@@ -109,9 +163,27 @@ async def fetch_sentiment_scores(
     try:
         since = datetime.now(timezone.utc) - timedelta(hours=hours)
         async with _pool.acquire() as conn:
+            global _sentiment_mentions_column
+            if _sentiment_mentions_column is None:
+                cols = await conn.fetch(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'sentiment_scores'
+                    """
+                )
+                col_set = {row["column_name"] for row in cols}
+                if "mentions" in col_set:
+                    _sentiment_mentions_column = "mentions"
+                elif "volume" in col_set:
+                    _sentiment_mentions_column = "volume"
+                else:
+                    _sentiment_mentions_column = ""
+
+            mentions_expr = _sentiment_mentions_column or "1"
             rows = await conn.fetch(
-                """
-                SELECT time, source, score, mentions
+                f"""
+                SELECT time, source, score, {mentions_expr} AS mentions
                 FROM sentiment_scores
                 WHERE symbol = $1 AND time >= $2
                 ORDER BY time ASC
@@ -123,8 +195,8 @@ async def fetch_sentiment_scores(
             {
                 "time": row["time"],
                 "source": row["source"],
-                "score": row["score"],
-                "mentions": row["mentions"],
+                "score": _to_float(row["score"]),
+                "mentions": _to_float(row["mentions"], 1.0),
             }
             for row in rows
         ]

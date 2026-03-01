@@ -37,7 +37,11 @@ class MexcAdapter(ExchangeAdapter):
         self._rest = ccxt.mexc({"enableRateLimit": True})
         if HAS_WS:
             self._ws = ccxtpro.mexc({"enableRateLimit": True})
-        logger.info("MEXC adapter connected", websocket=HAS_WS)
+        logger.info(
+            "MEXC adapter connected",
+            websocket=HAS_WS,
+            watch_tickers_supported=self.supports_watch_tickers(),
+        )
 
     async def close(self) -> None:
         if self._ws:
@@ -68,6 +72,13 @@ class MexcAdapter(ExchangeAdapter):
         logger.info(f"Fetched {len(symbols)} USDT spot pairs from MEXC")
         return symbols
 
+    def supports_watch_tickers(self) -> bool:
+        """Return True only when ccxt.pro and exchange support watch_tickers."""
+        if not HAS_WS or not self._ws:
+            return False
+        has = getattr(self._ws, "has", {}) or {}
+        return bool(has.get("watchTickers"))
+
     async def stream_tickers_ws(
         self,
         symbols: List[str],
@@ -79,6 +90,8 @@ class MexcAdapter(ExchangeAdapter):
         """
         if not HAS_WS or not self._ws:
             raise RuntimeError("WebSocket not available - install ccxt with pro support")
+        if not self.supports_watch_tickers():
+            raise RuntimeError("MEXC watch_tickers is not supported by current ccxt.pro adapter")
 
         reconnect_delay = 1.0
         max_reconnect_delay = 30.0

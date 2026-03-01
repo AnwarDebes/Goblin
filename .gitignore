@@ -292,3 +292,8 @@ info.json
 # Trading pairs list (auto-generated from MEXC API)
 config/trading_pairs.txt
 trading_pairs.txt
+
+# Keep dashboard source library tracked
+!dashboard/src/lib/
+!dashboard/src/lib/**
+!dashboard/package-lock.json

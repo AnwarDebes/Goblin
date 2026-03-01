@@ -100,7 +100,9 @@ CREATE TABLE IF NOT EXISTS sentiment_scores (
     symbol VARCHAR(20) NOT NULL,
     source VARCHAR(50) NOT NULL,  -- 'cryptopanic', 'reddit', 'fear_greed'
     score DECIMAL(5, 4) NOT NULL, -- -1.0 to 1.0
-    volume INTEGER DEFAULT 0,     -- number of mentions
+    mentions INTEGER DEFAULT 1,   -- number of mentions represented by this row
+    label VARCHAR(20),            -- optional model label (positive/negative/neutral)
+    text_hash VARCHAR(32),        -- optional dedup hash from sentiment service
     raw_data JSONB,               -- optional raw source data
     PRIMARY KEY (time, symbol, source)
 );

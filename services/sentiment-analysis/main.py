@@ -97,11 +97,16 @@ async def _process_items(items: List[dict], source: str):
         # Map cleaned text back to original item (best effort by index)
         item = items[min(i, len(items) - 1)]
         symbol = item.get("symbol", "UNKNOWN")
+        signed_score = (
+            result.score if result.label == "positive"
+            else -result.score if result.label == "negative"
+            else 0.0
+        )
 
         record = {
             "symbol": symbol,
             "label": result.label,
-            "score": result.score if result.label == "positive" else -result.score if result.label == "negative" else 0.0,
+            "score": signed_score,
             "source": item.get("source", source),
             "timestamp": item.get("timestamp", now.isoformat()),
             "text_preview": item["text"][:100],
@@ -130,10 +135,18 @@ async def _process_items(items: List[dict], source: str):
         db_records.append((
             ts,
             symbol,
-            result.label,
-            result.score,
             item.get("source", source),
+            float(signed_score),
+            int(item.get("mentions", 1) or 1),
+            result.label,
             _text_hash(item["text"]),
+            json.dumps(
+                {
+                    "text_preview": item["text"][:300],
+                    "confidence": result.score,
+                    "label": result.label,
+                }
+            ),
         ))
 
     # Trim news list

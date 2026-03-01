@@ -1,6 +1,7 @@
 """
 CryptoPanic news scraper - fetches trending crypto news posts.
 """
+import asyncio
 import os
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -11,7 +12,8 @@ from pydantic import BaseModel
 
 logger = structlog.get_logger()
 
-CRYPTOPANIC_API_URL = "https://cryptopanic.com/api/v1/posts/"
+# CryptoPanic developer endpoint (v2). v1 endpoint now returns 404.
+CRYPTOPANIC_API_URL = "https://cryptopanic.com/api/developer/v2/posts/"
 CRYPTOPANIC_API_KEY = os.getenv("CRYPTOPANIC_API_KEY", "")
 
 # Map common currency symbols to trading pairs
@@ -55,7 +57,10 @@ class CryptoPanicScraper:
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=30.0)
+            self._client = httpx.AsyncClient(
+                timeout=30.0,
+                headers={"User-Agent": "mangococo-sentiment/2.0"},
+            )
         return self._client
 
     async def close(self):
@@ -76,17 +81,36 @@ class CryptoPanicScraper:
                 "auth_token": self.api_key,
                 "filter": "rising",
                 "kind": "news",
-                "public": "true",
             }
-            resp = await client.get(CRYPTOPANIC_API_URL, params=params)
+            resp = None
+            for attempt in range(3):
+                resp = await client.get(CRYPTOPANIC_API_URL, params=params)
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    delay = min(2 ** attempt, 8)
+                    logger.warning(
+                        "cryptopanic_retryable_status",
+                        status=resp.status_code,
+                        attempt=attempt + 1,
+                        retry_in_s=delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                break
+
             resp.raise_for_status()
             data = resp.json()
 
             for post in data.get("results", []):
                 title = post.get("title", "")
+                description = post.get("description") or ""
                 published = post.get("published_at", "")
-                source_name = post.get("source", {}).get("title", "cryptopanic")
+                source_data = post.get("source") or {}
+                if isinstance(source_data, dict):
+                    source_name = source_data.get("title", "cryptopanic")
+                else:
+                    source_name = str(source_data)
                 currencies = post.get("currencies", []) or []
+                text_blob = f"{title} {description}".lower()
 
                 try:
                     ts = datetime.fromisoformat(published.replace("Z", "+00:00"))
@@ -96,22 +120,25 @@ class CryptoPanicScraper:
                 if currencies:
                     for currency in currencies:
                         code = currency.get("code", "").upper()
+                        if not code:
+                            continue
                         pair = SYMBOL_TO_PAIR.get(code, f"{code}/USDT")
                         items.append(
                             NewsItem(
-                                text=title,
+                                text=(f"{title} {description}").strip(),
                                 symbol=pair,
                                 source=source_name,
                                 timestamp=ts,
                             )
                         )
                 else:
-                    # No specific currency tagged, try to detect from title
+                    # v2 responses may not include explicit currencies on lower tiers.
+                    # Derive symbol from title/description content.
                     for sym, pair in SYMBOL_TO_PAIR.items():
-                        if sym.lower() in title.lower() or pair.split("/")[0].lower() in title.lower():
+                        if sym.lower() in text_blob or pair.split("/")[0].lower() in text_blob:
                             items.append(
                                 NewsItem(
-                                    text=title,
+                                    text=(f"{title} {description}").strip(),
                                     symbol=pair,
                                     source=source_name,
                                     timestamp=ts,

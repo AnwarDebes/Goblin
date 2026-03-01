@@ -25,9 +25,15 @@ init(autoreset=True)
 
 # Load environment variables from .env file if it exists
 def load_env_file():
-    """Load environment variables from config/.env file"""
-    env_file = os.path.join(os.path.dirname(__file__), '..', 'config', '.env')
-    if os.path.exists(env_file):
+    """Load environment variables from config/trading.env (fallback: config/.env)."""
+    base_dir = os.path.join(os.path.dirname(__file__), '..', 'config')
+    env_files = [
+        os.path.join(base_dir, 'trading.env'),
+        os.path.join(base_dir, '.env'),
+    ]
+    for env_file in env_files:
+        if not os.path.exists(env_file):
+            continue
         with open(env_file, 'r') as f:
             for line in f:
                 line = line.strip()
