@@ -143,7 +143,7 @@ export default function LiveOrderBook({ bids, asks, symbol }: LiveOrderBookProps
       {/* Mid price */}
       <div className="mt-2 flex items-center justify-center gap-2 border-t border-gray-800 pt-2">
         <span className="text-xs text-gray-500">Mid</span>
-        <span className="text-sm font-bold text-mango-400 font-mono">
+        <span className="text-sm font-bold text-gold-400 font-mono">
           ${formatPrice(midPrice)}
         </span>
       </div>

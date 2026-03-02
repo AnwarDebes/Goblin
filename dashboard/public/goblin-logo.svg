@@ -1,0 +1,136 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="logoBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a3d15;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#14532d;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0a2e0a;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="logoSkin" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#7cb342;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#558b2f;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="logoEar" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#8bc34a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#689f38;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="logoGoldRim" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#fbbf24;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#f59e0b;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#d97706;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="coinGold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#fcd34d;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f59e0b;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="chartGreen" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#22c55e;stop-opacity:0.1" />
+      <stop offset="100%" style="stop-color:#22c55e;stop-opacity:0.4" />
+    </linearGradient>
+    <filter id="logoGlow">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feFlood flood-color="#22c55e" flood-opacity="0.3" />
+      <feComposite in2="blur" operator="in" />
+      <feMerge>
+        <feMergeNode />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+    <filter id="goldGlow">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feFlood flood-color="#fbbf24" flood-opacity="0.4" />
+      <feComposite in2="blur" operator="in" />
+      <feMerge>
+        <feMergeNode />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Main Background Circle -->
+  <circle cx="256" cy="256" r="250" fill="url(#logoGoldRim)" />
+  <circle cx="256" cy="256" r="240" fill="url(#logoBg)" />
+  <circle cx="256" cy="256" r="225" fill="none" stroke="#5d9c4a" stroke-width="1.5" opacity="0.4" />
+
+  <!-- Trading chart line behind goblin -->
+  <path d="M60 380 L100 360 L140 370 L180 320 L220 340 L260 280 L300 300 L340 250 L380 260 L420 200 L460 180" stroke="#22c55e" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.4" filter="url(#logoGlow)" />
+  <path d="M60 380 L100 360 L140 370 L180 320 L220 340 L260 280 L300 300 L340 250 L380 260 L420 200 L460 180 L460 400 L60 400 Z" fill="url(#chartGreen)" opacity="0.3" />
+
+  <!-- Left Ear -->
+  <ellipse cx="90" cy="195" rx="55" ry="85" fill="url(#logoEar)" transform="rotate(-30 90 195)" />
+  <ellipse cx="95" cy="195" rx="35" ry="55" fill="#a5d6a7" opacity="0.3" transform="rotate(-30 95 195)" />
+
+  <!-- Right Ear -->
+  <ellipse cx="422" cy="195" rx="55" ry="85" fill="url(#logoEar)" transform="rotate(30 422 195)" />
+  <ellipse cx="417" cy="195" rx="35" ry="55" fill="#a5d6a7" opacity="0.3" transform="rotate(30 417 195)" />
+
+  <!-- Head/Face -->
+  <ellipse cx="256" cy="270" rx="145" ry="135" fill="url(#logoSkin)" />
+  <ellipse cx="230" cy="240" rx="75" ry="65" fill="#8bc34a" opacity="0.3" />
+
+  <!-- Left Eye -->
+  <ellipse cx="200" cy="255" rx="38" ry="46" fill="#fff" />
+  <ellipse cx="206" cy="259" rx="21" ry="25" fill="#2d2d2d" />
+  <circle cx="215" cy="248" r="8" fill="#fff" />
+  <circle cx="196" cy="270" r="5" fill="#fff" opacity="0.6" />
+
+  <!-- Right Eye -->
+  <ellipse cx="312" cy="255" rx="38" ry="46" fill="#fff" />
+  <ellipse cx="318" cy="259" rx="21" ry="25" fill="#2d2d2d" />
+  <circle cx="327" cy="248" r="8" fill="#fff" />
+  <circle cx="308" cy="270" r="5" fill="#fff" opacity="0.6" />
+
+  <!-- Eyebrows -->
+  <path d="M155 210 Q185 190 230 210" stroke="#4a7c40" stroke-width="6" fill="none" stroke-linecap="round" />
+  <path d="M282 210 Q327 190 357 210" stroke="#4a7c40" stroke-width="6" fill="none" stroke-linecap="round" />
+
+  <!-- Nose -->
+  <ellipse cx="256" cy="305" rx="20" ry="13" fill="#558b2f" />
+  <circle cx="246" cy="304" r="4.5" fill="#2d2d2d" />
+  <circle cx="266" cy="304" r="4.5" fill="#2d2d2d" />
+
+  <!-- Mouth - Confident grin -->
+  <path d="M195 345 Q256 395 317 345" stroke="#2d2d2d" stroke-width="5" fill="none" stroke-linecap="round" />
+
+  <!-- Cheek blush -->
+  <ellipse cx="145" cy="305" rx="25" ry="16" fill="#ff8a80" opacity="0.3" />
+  <ellipse cx="367" cy="305" rx="25" ry="16" fill="#ff8a80" opacity="0.3" />
+
+  <!-- Horns -->
+  <circle cx="200" cy="148" r="20" fill="url(#logoSkin)" />
+  <circle cx="312" cy="148" r="20" fill="url(#logoSkin)" />
+
+  <!-- Floating Gold Coins -->
+  <!-- Coin 1 (BTC) - top left -->
+  <g filter="url(#goldGlow)">
+    <circle cx="80" cy="110" r="28" fill="url(#coinGold)" stroke="#d97706" stroke-width="2" />
+    <text x="80" y="119" text-anchor="middle" font-family="Arial" font-size="24" font-weight="bold" fill="#92400e">₿</text>
+  </g>
+
+  <!-- Coin 2 (ETH) - top right -->
+  <g filter="url(#goldGlow)">
+    <circle cx="432" cy="100" r="24" fill="url(#coinGold)" stroke="#d97706" stroke-width="2" />
+    <text x="432" y="108" text-anchor="middle" font-family="Arial" font-size="20" font-weight="bold" fill="#92400e">Ξ</text>
+  </g>
+
+  <!-- Coin 3 - bottom left -->
+  <g filter="url(#goldGlow)">
+    <circle cx="65" cy="380" r="20" fill="url(#coinGold)" stroke="#d97706" stroke-width="2" />
+    <text x="65" y="387" text-anchor="middle" font-family="Arial" font-size="16" font-weight="bold" fill="#92400e">$</text>
+  </g>
+
+  <!-- Coin 4 - bottom right -->
+  <g filter="url(#goldGlow)">
+    <circle cx="450" cy="370" r="22" fill="url(#coinGold)" stroke="#d97706" stroke-width="2" />
+    <text x="450" y="378" text-anchor="middle" font-family="Arial" font-size="18" font-weight="bold" fill="#92400e">◆</text>
+  </g>
+
+  <!-- Small sparkles -->
+  <circle cx="150" cy="80" r="3" fill="#fbbf24" opacity="0.7" />
+  <circle cx="370" cy="75" r="2" fill="#fbbf24" opacity="0.5" />
+  <circle cx="460" cy="280" r="2.5" fill="#22c55e" opacity="0.6" />
+  <circle cx="50" cy="300" r="2" fill="#22c55e" opacity="0.5" />
+
+  <!-- GOBLIN text -->
+  <text x="256" y="455" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-size="42" font-weight="bold" fill="#fbbf24" stroke="#2d5a27" stroke-width="1" filter="url(#goldGlow)">GOBLIN</text>
+  <text x="256" y="485" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="#86efac" opacity="0.8" letter-spacing="4">AI TRADING</text>
+</svg>

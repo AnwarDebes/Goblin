@@ -5,7 +5,7 @@ import Sidebar from "@/components/layout/Sidebar";
 import Header from "@/components/layout/Header";
 
 export const metadata: Metadata = {
-  title: "MangoCoco - AI Trading Dashboard",
+  title: "Goblin - AI Trading Dashboard",
   description: "Real-time AI-powered crypto trading monitoring dashboard",
 };
 

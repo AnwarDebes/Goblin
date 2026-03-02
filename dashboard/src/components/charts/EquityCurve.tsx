@@ -1,8 +1,6 @@
 "use client";
 
 import {
-  LineChart,
-  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -33,9 +31,9 @@ function CustomTooltip({
 }) {
   if (!active || !payload || payload.length === 0) return null;
   return (
-    <div className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 shadow-lg">
+    <div className="rounded-lg border border-goblin-500/20 bg-gray-900 px-3 py-2 shadow-lg">
       <p className="text-xs text-gray-400">{label}</p>
-      <p className="text-sm font-bold text-mango-500">
+      <p className="text-sm font-bold text-goblin-400">
         {formatCurrency(payload[0].value)}
       </p>
     </div>
@@ -56,8 +54,8 @@ export default function EquityCurve({ data }: EquityCurveProps) {
       <AreaChart data={data}>
         <defs>
           <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor="#ffc107" stopOpacity={0.3} />
-            <stop offset="95%" stopColor="#ffc107" stopOpacity={0} />
+            <stop offset="5%" stopColor="#22c55e" stopOpacity={0.3} />
+            <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
@@ -77,7 +75,7 @@ export default function EquityCurve({ data }: EquityCurveProps) {
         <Area
           type="monotone"
           dataKey="value"
-          stroke="#ffc107"
+          stroke="#22c55e"
           strokeWidth={2}
           fill="url(#equityGradient)"
         />

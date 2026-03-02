@@ -6,11 +6,16 @@
   :root {
     --background: #030712;
     --foreground: #f9fafb;
+    --goblin-primary: #22c55e;
+    --goblin-dark: #14532d;
+    --gold-primary: #f59e0b;
   }
 
   body {
     @apply bg-gray-950 text-white antialiased;
     font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(180deg, #030712 0%, #0a1628 50%, #030712 100%);
+    background-attachment: fixed;
   }
 
   * {
@@ -20,11 +25,33 @@
 
 @layer components {
   .card {
-    @apply rounded-xl border border-gray-800 bg-gray-900 p-5 shadow-lg;
+    @apply rounded-xl border border-gray-800 bg-gray-900 p-5 shadow-lg relative overflow-hidden;
+    background: linear-gradient(180deg, rgba(22,101,52,0.05) 0%, rgba(17,24,39,1) 100%);
+  }
+
+  .card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(34,197,94,0.3), transparent);
   }
 
   .card-hover {
-    @apply card transition-colors hover:border-gray-600;
+    @apply card transition-all duration-300;
+  }
+
+  .card-hover:hover {
+    @apply border-goblin-500/30;
+    box-shadow: 0 0 20px rgba(34,197,94,0.1), 0 4px 20px rgba(0,0,0,0.3);
+    transform: translateY(-2px);
+  }
+
+  .card-glow {
+    @apply card;
+    animation: goblin-glow 3s ease-in-out infinite;
   }
 
   .text-profit {
@@ -60,7 +87,8 @@
   }
 
   .status-healthy {
-    @apply status-dot bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)];
+    @apply status-dot bg-green-500;
+    box-shadow: 0 0 6px rgba(34,197,94,0.6), 0 0 12px rgba(34,197,94,0.3);
   }
 
   .status-degraded {
@@ -70,23 +98,179 @@
   .status-down {
     @apply status-dot bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)];
   }
+
+  /* Goblin-themed section title */
+  .section-title {
+    @apply text-lg font-semibold text-white relative inline-block;
+  }
+
+  .section-title::after {
+    content: "";
+    @apply absolute -bottom-1 left-0 h-0.5 w-full;
+    background: linear-gradient(90deg, #22c55e, transparent);
+  }
+
+  /* Gold value highlight */
+  .value-gold {
+    @apply font-bold;
+    background: linear-gradient(135deg, #fbbf24, #f59e0b, #fbbf24);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Goblin green gradient text */
+  .text-goblin-gradient {
+    background: linear-gradient(135deg, #4ade80, #22c55e);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Glowing border effect */
+  .border-glow {
+    @apply border border-goblin-500/20;
+    box-shadow: inset 0 0 20px rgba(34,197,94,0.05);
+  }
+
+  /* Animated background particles container */
+  .particles-bg {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .particles-bg::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-image:
+      radial-gradient(2px 2px at 20% 30%, rgba(34,197,94,0.3), transparent),
+      radial-gradient(2px 2px at 40% 70%, rgba(245,158,11,0.2), transparent),
+      radial-gradient(1px 1px at 60% 20%, rgba(34,197,94,0.2), transparent),
+      radial-gradient(2px 2px at 80% 50%, rgba(245,158,11,0.15), transparent),
+      radial-gradient(1px 1px at 10% 80%, rgba(34,197,94,0.25), transparent),
+      radial-gradient(1px 1px at 90% 10%, rgba(34,197,94,0.2), transparent);
+    animation: float 8s ease-in-out infinite;
+    pointer-events: none;
+    z-index: 0;
+  }
 }
 
-/* Custom scrollbar */
+/* Custom scrollbar - Goblin theme */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #1f2937;
+  background: #0a1628;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #4b5563;
+  background: #166534;
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #6b7280;
+  background: #22c55e;
+}
+
+/* 3D Coin Styles */
+.perspective-container {
+  perspective: 1000px;
+}
+
+.coin-3d {
+  transform-style: preserve-3d;
+  animation: coin-spin 8s linear infinite;
+}
+
+.coin-3d:hover {
+  animation-duration: 2s;
+}
+
+.coin-face {
+  backface-visibility: hidden;
+  position: absolute;
+  inset: 0;
+}
+
+.coin-back {
+  backface-visibility: hidden;
+  position: absolute;
+  inset: 0;
+  transform: rotateY(180deg);
+}
+
+/* Glow effects */
+.glow-green {
+  box-shadow: 0 0 15px rgba(34,197,94,0.3), 0 0 30px rgba(34,197,94,0.1);
+}
+
+.glow-gold {
+  box-shadow: 0 0 15px rgba(245,158,11,0.3), 0 0 30px rgba(245,158,11,0.1);
+}
+
+.glow-green-sm {
+  box-shadow: 0 0 8px rgba(34,197,94,0.4);
+}
+
+/* Hover glow transition */
+.hover-glow {
+  transition: box-shadow 0.3s ease, border-color 0.3s ease, transform 0.3s ease;
+}
+
+.hover-glow:hover {
+  box-shadow: 0 0 20px rgba(34,197,94,0.15), 0 4px 20px rgba(0,0,0,0.3);
+  border-color: rgba(34,197,94,0.3);
+  transform: translateY(-1px);
+}
+
+/* Animated gradient border */
+.gradient-border {
+  position: relative;
+}
+
+.gradient-border::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #22c55e, #f59e0b, transparent);
+  background-size: 200% 100%;
+  animation: gradient-slide 3s linear infinite;
+}
+
+@keyframes gradient-slide {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* MetaMask connect button */
+.btn-metamask {
+  @apply flex items-center gap-2 rounded-lg px-6 py-3 font-semibold transition-all duration-300;
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: #030712;
+}
+
+.btn-metamask:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(245,158,11,0.4);
+}
+
+/* Goblin primary button */
+.btn-goblin {
+  @apply rounded-lg px-6 py-3 font-semibold transition-all duration-300;
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  color: white;
+}
+
+.btn-goblin:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(34,197,94,0.4);
 }

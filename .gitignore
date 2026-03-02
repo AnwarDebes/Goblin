@@ -1,5 +1,5 @@
 # ===========================================
-# MangoCoco .gitignore
+# Goblin AI Trading Platform .gitignore
 # ===========================================
 
 # ============================================
@@ -258,6 +258,14 @@ htmlcov/
 # IDE session files
 .claude/
 *.claude
+.cursor/
+
+# Next.js build output
+dashboard/.next/
+
+# Temp files
+.tmp_*
+mangococo_status.md
 
 # Trading configuration with API keys
 config/trading.env

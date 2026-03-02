@@ -27,15 +27,30 @@ export default function Header() {
   }, []);
 
   return (
-    <header className="flex h-16 items-center justify-between border-b border-gray-800 bg-gray-950 px-6">
+    <header className="relative flex h-16 items-center justify-between border-b border-gray-800/50 bg-gray-950/95 backdrop-blur-sm px-6">
+      {/* Subtle bottom accent line */}
+      <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-goblin-500/20 to-transparent" />
+
       <div className="lg:hidden w-10" />
+
       <div className="flex items-center gap-4 ml-auto">
+        {/* Live market indicator */}
+        <div className="hidden sm:flex items-center gap-2 text-xs text-gray-500">
+          <div className="h-1 w-1 rounded-full bg-goblin-500 animate-pulse" />
+          <span>Markets Open</span>
+        </div>
+
+        <div className="h-4 w-px bg-gray-800 hidden sm:block" />
+
         <span className="text-sm font-mono text-gray-400">{currentTime}</span>
+
+        <div className="h-4 w-px bg-gray-800" />
+
         <div className="flex items-center gap-2">
           {isConnected ? (
             <>
               <div className="status-healthy" />
-              <Wifi size={16} className="text-green-500" />
+              <Wifi size={16} className="text-goblin-500" />
             </>
           ) : (
             <>

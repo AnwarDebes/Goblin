@@ -52,7 +52,7 @@ function CustomTooltip({
   return (
     <div className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 shadow-lg">
       <p className="text-xs text-gray-400">{d.metric}</p>
-      <p className="text-sm font-bold text-mango-500">{d.rawValue}</p>
+      <p className="text-sm font-bold text-goblin-500">{d.rawValue}</p>
       <p className="text-[10px] text-gray-500">Score: {d.value.toFixed(0)}/100</p>
     </div>
   );

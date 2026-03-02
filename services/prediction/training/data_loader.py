@@ -19,7 +19,7 @@ import structlog
 
 logger = structlog.get_logger()
 
-DB_DSN = os.getenv("TIMESCALEDB_DSN", "postgresql://postgres:postgres@timescaledb:5432/mangococo")
+DB_DSN = os.getenv("TIMESCALEDB_DSN", "postgresql://postgres:postgres@timescaledb:5432/goblin")
 
 # Class thresholds (percentage return)
 STRONG_BUY_THRESHOLD = 0.5

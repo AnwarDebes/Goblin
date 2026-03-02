@@ -26,7 +26,7 @@ export default function SignalFeed() {
   return (
     <div className="card p-0">
       <div className="flex items-center gap-2 border-b border-gray-800 px-5 py-3">
-        <Zap size={16} className="text-mango-500" />
+        <Zap size={16} className="text-goblin-500" />
         <h3 className="font-semibold text-white">Live Signals</h3>
       </div>
       <div className="max-h-96 overflow-y-auto">

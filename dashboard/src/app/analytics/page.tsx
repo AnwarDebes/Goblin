@@ -125,7 +125,7 @@ export default function AnalyticsPage() {
         <StatCard
           label="Win Rate"
           value={formatPercent(winRate).replace("+", "")}
-          color="text-mango-500"
+          color="text-goblin-500"
         />
         <StatCard
           label="Profit Factor"
@@ -164,7 +164,7 @@ export default function AnalyticsPage() {
                 </div>
                 <div className="mt-1 h-2 rounded-full bg-gray-700">
                   <div
-                    className="h-2 rounded-full bg-mango-500"
+                    className="h-2 rounded-full bg-goblin-500"
                     style={{
                       width: `${(count / totalTrades) * 100}%`,
                     }}

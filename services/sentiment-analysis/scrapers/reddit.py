@@ -13,7 +13,7 @@ logger = structlog.get_logger()
 
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
 REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "")
-REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "mangococo-sentiment/1.0")
+REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "goblin-sentiment/1.0")
 
 MONITORED_SUBREDDITS = [
     "cryptocurrency",

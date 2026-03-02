@@ -30,7 +30,7 @@ export default function PortfolioCard({
       : 0;
 
   return (
-    <div className="card col-span-full bg-gradient-to-br from-gray-900 to-gray-800 border-mango-500/20">
+    <div className="card col-span-full bg-gradient-to-br from-gray-900 to-gray-800 border-goblin-500/20">
       <div className="flex items-start justify-between">
         <div>
           <p className="text-sm font-medium text-gray-400">Total Portfolio Value</p>
@@ -72,7 +72,7 @@ export default function PortfolioCard({
           </div>
           <div>
             <p className="text-xs text-gray-500">Open Positions</p>
-            <p className="text-sm font-medium text-mango-400">
+            <p className="text-sm font-medium text-gold-400">
               {portfolio.open_positions}
             </p>
           </div>

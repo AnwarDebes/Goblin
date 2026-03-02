@@ -10,7 +10,9 @@ export default function TradingPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">Live Trading</h1>
+        <h1 className="text-2xl font-bold text-white">
+          Live <span className="text-goblin-gradient">Trading</span>
+        </h1>
         <p className="text-sm text-gray-400">
           Real-time chart, signals, and positions
         </p>
@@ -20,10 +22,10 @@ export default function TradingPage() {
         {/* Chart Area */}
         <div className="lg:col-span-2">
           <div className="card">
-            <h3 className="mb-3 font-semibold text-white">Price Chart</h3>
+            <h3 className="section-title mb-3">Price Chart</h3>
             <div
               id="chart-container"
-              className="flex h-[400px] items-center justify-center rounded-lg border border-gray-700 bg-gray-950"
+              className="flex h-[400px] items-center justify-center rounded-lg border border-goblin-500/10 bg-gray-950"
             >
               <div className="text-center text-gray-500">
                 <p className="text-lg font-medium">TradingView Chart</p>
@@ -43,9 +45,7 @@ export default function TradingPage() {
 
       {/* Current Positions */}
       <div>
-        <h2 className="mb-3 text-lg font-semibold text-white">
-          Active Positions
-        </h2>
+        <h2 className="section-title mb-3">Active Positions</h2>
         {isLoading ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 3 }).map((_, i) => (

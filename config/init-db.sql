@@ -1,4 +1,4 @@
--- MangoCoco Database Schema v2.0
+-- Goblin Database Schema v2.0
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 -- =============================================
@@ -217,5 +217,5 @@ GROUP BY bucket
 WITH NO DATA;
 
 -- Permissions
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO mangococo;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO mangococo;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO goblin;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO goblin;

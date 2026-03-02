@@ -29,8 +29,8 @@ TRADING_PAIRS = os.getenv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT").split("
 # TimescaleDB config
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "timescaledb")
 POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", 5432))
-POSTGRES_DB = os.getenv("POSTGRES_DB", "mangococo")
-POSTGRES_USER = os.getenv("POSTGRES_USER", "mangococo")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "goblin")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "goblin")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
 DB_ENABLED = os.getenv("DB_ENABLED", "true").lower() == "true"
 

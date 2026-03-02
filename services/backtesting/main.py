@@ -1,5 +1,5 @@
 """
-Backtesting Service for MangoCoco Crypto Trading Platform.
+Backtesting Service for Goblin Crypto Trading Platform.
 
 FastAPI service (port 8011) that replays historical data through the
 prediction/risk pipeline and computes performance metrics.  Supports

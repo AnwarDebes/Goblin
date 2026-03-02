@@ -23,8 +23,8 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "timescaledb")
 POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", 5432))
-POSTGRES_DB = os.getenv("POSTGRES_DB", "mangococo")
-POSTGRES_USER = os.getenv("POSTGRES_USER", "mangococo")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "goblin")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "goblin")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
 
 SERVICES = {
@@ -86,7 +86,7 @@ async def lifespan(app: FastAPI):
         await db_pool.close()
 
 
-app = FastAPI(title="MangoCoco API Gateway", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Goblin API Gateway", version="2.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

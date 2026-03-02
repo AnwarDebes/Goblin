@@ -59,7 +59,7 @@ class CryptoPanicScraper:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 timeout=30.0,
-                headers={"User-Agent": "mangococo-sentiment/2.0"},
+                headers={"User-Agent": "goblin-sentiment/2.0"},
             )
         return self._client
 

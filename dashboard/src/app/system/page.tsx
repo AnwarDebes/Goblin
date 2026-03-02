@@ -81,7 +81,7 @@ export default function SystemPage() {
                         model.accuracy >= 0.7
                           ? "text-profit"
                           : model.accuracy >= 0.5
-                          ? "text-mango-500"
+                          ? "text-goblin-500"
                           : "text-loss"
                       )}
                     >
@@ -103,7 +103,7 @@ export default function SystemPage() {
                       model.accuracy >= 0.7
                         ? "bg-green-500"
                         : model.accuracy >= 0.5
-                        ? "bg-mango-500"
+                        ? "bg-goblin-500"
                         : "bg-red-500"
                     )}
                     style={{ width: `${model.accuracy * 100}%` }}
