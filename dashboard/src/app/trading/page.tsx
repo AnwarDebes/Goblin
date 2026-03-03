@@ -1,40 +1,40 @@
 "use client";
 
+import { useState } from "react";
 import { usePositions } from "@/hooks/usePortfolio";
 import PositionCard from "@/components/panels/PositionCard";
 import SignalFeed from "@/components/panels/SignalFeed";
+import PriceChart from "@/components/charts/PriceChart";
+import AITimeline from "@/components/panels/AITimeline";
+import ManualTradePanel from "@/components/panels/ManualTradePanel";
 
 export default function TradingPage() {
   const { data: positions, isLoading } = usePositions();
+  const [showManualTrade, setShowManualTrade] = useState(false);
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-white">
-          Live <span className="text-goblin-gradient">Trading</span>
-        </h1>
-        <p className="text-sm text-gray-400">
-          Real-time chart, signals, and positions
-        </p>
+    <div className="space-y-4 sm:space-y-6 animate-fade-in">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-white">
+            Live <span className="text-goblin-gradient">Trading</span>
+          </h1>
+          <p className="text-xs sm:text-sm text-gray-400">
+            Real-time chart, signals, and positions
+          </p>
+        </div>
+        <button
+          onClick={() => setShowManualTrade(true)}
+          className="btn-goblin text-xs sm:text-sm px-3 sm:px-4 py-2 whitespace-nowrap"
+        >
+          Manual Trade
+        </button>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-4 sm:gap-6 lg:grid-cols-3">
         {/* Chart Area */}
         <div className="lg:col-span-2">
-          <div className="card">
-            <h3 className="section-title mb-3">Price Chart</h3>
-            <div
-              id="chart-container"
-              className="flex h-[400px] items-center justify-center rounded-lg border border-goblin-500/10 bg-gray-950"
-            >
-              <div className="text-center text-gray-500">
-                <p className="text-lg font-medium">TradingView Chart</p>
-                <p className="mt-1 text-sm">
-                  Connect lightweight-charts to render live price data
-                </p>
-              </div>
-            </div>
-          </div>
+          <PriceChart />
         </div>
 
         {/* Signal Feed */}
@@ -43,13 +43,16 @@ export default function TradingPage() {
         </div>
       </div>
 
+      {/* AI Decision Timeline */}
+      <AITimeline />
+
       {/* Current Positions */}
       <div>
         <h2 className="section-title mb-3">Active Positions</h2>
         {isLoading ? (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="card animate-pulse h-36" />
+              <div key={i} className="card skeleton-shimmer h-36" />
             ))}
           </div>
         ) : !positions || positions.length === 0 ? (
@@ -57,13 +60,18 @@ export default function TradingPage() {
             No active positions
           </div>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
             {positions.map((pos, i) => (
               <PositionCard key={`${pos.symbol}-${i}`} position={pos} />
             ))}
           </div>
         )}
       </div>
+
+      {/* Manual Trade Side Panel */}
+      {showManualTrade && (
+        <ManualTradePanel onClose={() => setShowManualTrade(false)} />
+      )}
     </div>
   );
 }

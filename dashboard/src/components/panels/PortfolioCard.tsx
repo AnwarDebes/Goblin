@@ -31,10 +31,10 @@ export default function PortfolioCard({
 
   return (
     <div className="card col-span-full bg-gradient-to-br from-gray-900 to-gray-800 border-goblin-500/20">
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
         <div>
-          <p className="text-sm font-medium text-gray-400">Total Portfolio Value</p>
-          <p className="mt-1 text-4xl font-bold tracking-tight text-white">
+          <p className="text-xs sm:text-sm font-medium text-gray-400">Total Portfolio Value</p>
+          <p className="mt-1 text-2xl sm:text-4xl font-bold tracking-tight text-white">
             {formatCurrency(portfolio.total_value)}
           </p>
           <div className="mt-3 flex items-center gap-3">
@@ -57,7 +57,7 @@ export default function PortfolioCard({
             <span className="text-xs text-gray-500">24h</span>
           </div>
         </div>
-        <div className="text-right space-y-2">
+        <div className="flex flex-wrap gap-x-4 gap-y-2 sm:flex-col sm:text-right sm:gap-0 sm:space-y-2">
           <div>
             <p className="text-xs text-gray-500">Cash Balance</p>
             <p className="text-sm font-medium text-gray-300">

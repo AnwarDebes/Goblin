@@ -84,9 +84,9 @@ export default function GoblinCoinPage() {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       {/* Hero Section */}
-      <div className="relative particles-bg rounded-2xl border border-goblin-500/10 bg-gradient-to-br from-goblin-900/30 via-gray-900 to-gray-950 p-8 overflow-hidden">
+      <div className="relative particles-bg rounded-xl sm:rounded-2xl border border-goblin-500/10 bg-gradient-to-br from-goblin-900/30 via-gray-900 to-gray-950 p-4 sm:p-8 overflow-hidden">
         <div className="relative z-10 flex flex-col items-center text-center lg:flex-row lg:text-left lg:justify-between">
           <div className="lg:max-w-lg">
             <div className="flex items-center justify-center lg:justify-start gap-2 mb-2">
@@ -94,7 +94,7 @@ export default function GoblinCoinPage() {
                 LIVE ON BLOCKCHAIN
               </span>
             </div>
-            <h1 className="text-4xl font-bold text-white mb-2">
+            <h1 className="text-2xl sm:text-4xl font-bold text-white mb-2">
               <span className="text-goblin-gradient">GBLN</span> Token
             </h1>
             <p className="text-lg text-gray-400 mb-4">
@@ -147,7 +147,7 @@ export default function GoblinCoinPage() {
       {/* Token Stats */}
       <div>
         <h2 className="section-title mb-4">Token Statistics</h2>
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 sm:gap-4 lg:grid-cols-4">
           <StatBox label="Market Cap" value="--" icon={BarChart3} accent />
           <StatBox label="Holders" value="--" icon={Users} />
           <StatBox label="24h Volume" value="--" icon={TrendingUp} accent />
@@ -156,7 +156,7 @@ export default function GoblinCoinPage() {
       </div>
 
       {/* Token Info */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-4 sm:gap-6 lg:grid-cols-2">
         {/* Token Details */}
         <div className="card">
           <h3 className="section-title mb-4">Token Information</h3>

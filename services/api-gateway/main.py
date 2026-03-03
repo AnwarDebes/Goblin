@@ -159,14 +159,25 @@ async def get_portfolio_v2():
         except Exception:
             pass
 
-        # Compute summary
+        # Compute summary - prefer executor paper_portfolio for accurate totals
         risk_data = portfolio.get("risk", {})
+        balance_data = portfolio.get("balance", {})
+        bal_summary = balance_data.get("summary", {})
+        paper = bal_summary if bal_summary else {}
+
+        total_value = paper.get("total_value", 0) or risk_data.get("total_value", 0)
+        cash = paper.get("usdt_balance", 0) or risk_data.get("available_capital", 0)
+        positions_value = total_value - cash if total_value > cash else 0
+        daily_pnl = risk_data.get("daily_pnl", 0) or paper.get("pnl", 0)
+        positions_dict = paper.get("positions", {})
+        open_count = len(positions_dict) if positions_dict else portfolio.get("open_positions_count", 0)
+
         portfolio["summary"] = {
-            "total_value": risk_data.get("total_value", 0),
-            "cash_balance": risk_data.get("available_capital", 0),
-            "positions_value": portfolio.get("total_unrealized_pnl", 0),
-            "daily_pnl": risk_data.get("daily_pnl", 0),
-            "open_positions": portfolio.get("open_positions_count", 0),
+            "total_value": total_value,
+            "cash_balance": cash,
+            "positions_value": positions_value,
+            "daily_pnl": daily_pnl,
+            "open_positions": open_count,
         }
 
         return portfolio
@@ -625,6 +636,318 @@ async def stream_updates():
             "Access-Control-Allow-Origin": "*",
         },
     )
+
+
+# =============================================
+# MEXC Market Data Proxy
+# =============================================
+
+MEXC_INTERVAL_MAP = {
+    "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+    "1h": "60m", "4h": "4h", "1d": "1d", "1w": "1W", "1M": "1M",
+}
+
+
+@app.get("/api/v2/candles")
+async def get_candles(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 200):
+    """Proxy to MEXC klines endpoint."""
+    mexc_interval = MEXC_INTERVAL_MAP.get(interval, "60m")
+    clean_symbol = symbol.replace("/", "")
+    url = f"https://api.mexc.com/api/v3/klines?symbol={clean_symbol}&interval={mexc_interval}&limit={limit}"
+    try:
+        response = await http_client.get(url, timeout=10.0)
+        data = response.json()
+        candles = []
+        for k in data:
+            candles.append({
+                "time": k[0] // 1000,
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            })
+        return candles
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/v2/depth")
+async def get_depth(symbol: str = "BTCUSDT", limit: int = 20):
+    """Proxy to MEXC order book."""
+    clean_symbol = symbol.replace("/", "")
+    url = f"https://api.mexc.com/api/v3/depth?symbol={clean_symbol}&limit={limit}"
+    try:
+        response = await http_client.get(url, timeout=10.0)
+        return response.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/v2/ticker")
+async def get_ticker_v2(symbol: Optional[str] = None):
+    """Proxy to MEXC 24hr ticker."""
+    url = "https://api.mexc.com/api/v3/ticker/24hr"
+    if symbol:
+        clean_symbol = symbol.replace("/", "")
+        url += f"?symbol={clean_symbol}"
+    try:
+        response = await http_client.get(url, timeout=10.0)
+        return response.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/v2/prices")
+async def get_prices():
+    """Get all symbol prices from MEXC."""
+    url = "https://api.mexc.com/api/v3/ticker/price"
+    try:
+        response = await http_client.get(url, timeout=10.0)
+        return response.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+# =============================================
+# Logs endpoint
+# =============================================
+
+@app.get("/api/v2/logs")
+async def get_logs(container: Optional[str] = None, level: Optional[str] = None, limit: int = 100, since: Optional[str] = None):
+    """Aggregate logs from services via health checks and Redis."""
+    logs = []
+    now = datetime.utcnow()
+
+    # Try to get recent structured logs from Redis
+    try:
+        for service_name in SERVICES.keys():
+            if container and container != service_name:
+                continue
+            raw_logs = await redis_client.lrange(f"logs:{service_name}", 0, limit - 1)
+            for raw in raw_logs:
+                try:
+                    entry = json.loads(raw)
+                    if level and entry.get("level") != level:
+                        continue
+                    if since and entry.get("timestamp", "") < since:
+                        continue
+                    logs.append(entry)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    # If no Redis logs, build from service health checks
+    if not logs:
+        for name, url in SERVICES.items():
+            if container and container != name:
+                continue
+            try:
+                resp = await http_client.get(f"{url}/health", timeout=3.0)
+                status = "healthy" if resp.status_code == 200 else "degraded"
+                log_level = "info" if status == "healthy" else "warn"
+                if level and level != log_level:
+                    continue
+                data = resp.json() if resp.status_code == 200 else {}
+                logs.append({
+                    "container": name,
+                    "timestamp": now.isoformat(),
+                    "level": log_level,
+                    "message": f"[{name}] Health check: {status} — {json.dumps(data)}",
+                })
+            except Exception as e:
+                if level and level != "error":
+                    continue
+                logs.append({
+                    "container": name,
+                    "timestamp": now.isoformat(),
+                    "level": "error",
+                    "message": f"[{name}] Health check failed: {str(e)}",
+                })
+
+    logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    return logs[:limit]
+
+
+# =============================================
+# Resource Metrics
+# =============================================
+
+@app.get("/api/v2/resources")
+async def get_resources():
+    """Get real resource metrics from Docker container stats."""
+    resources = []
+
+    # ── Try real Docker stats first ──────────────────────────────────
+    try:
+        import aiodocker
+        docker = aiodocker.Docker()
+        try:
+            containers = await docker.containers.list(all=True)
+            # Map container names to our service names
+            name_map = {
+                "mc-market-data": "market_data",
+                "mc-prediction": "prediction",
+                "mc-signal": "signal",
+                "mc-risk": "risk",
+                "mc-executor": "executor",
+                "mc-position": "position",
+                "mc-feature-store": "feature_store",
+                "mc-sentiment-analysis": "sentiment",
+                "mc-trend-analysis": "trend",
+                "mc-portfolio-optimizer": "portfolio_optimizer",
+                "mc-backtesting": "backtesting",
+                "mc-api-gateway": "api_gateway",
+                "mc-dashboard": "dashboard",
+                "mc-redis": "redis",
+                "mc-timescaledb": "timescaledb",
+            }
+
+            async def get_container_stats(container):
+                info = await container.show()
+                names = info.get("Name", "").lstrip("/")
+                service_name = name_map.get(names, names)
+                state = info.get("State", {})
+                status_raw = state.get("Status", "exited").lower()
+                started_at = state.get("StartedAt", "")
+                restart_count_val = info.get("RestartCount", 0)
+
+                # Compute uptime
+                uptime_seconds = 0
+                if started_at and status_raw == "running":
+                    try:
+                        start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                        uptime_seconds = int((datetime.now(start.tzinfo) - start).total_seconds())
+                    except Exception:
+                        pass
+
+                entry = {
+                    "container": service_name,
+                    "status": "running" if status_raw == "running" else "restarting" if status_raw == "restarting" else "stopped",
+                    "cpu_percent": 0.0,
+                    "memory_used_mb": 0.0,
+                    "memory_limit_mb": 512.0,
+                    "memory_percent": 0.0,
+                    "network_rx_mb": 0.0,
+                    "network_tx_mb": 0.0,
+                    "disk_read_mb": 0.0,
+                    "disk_write_mb": 0.0,
+                    "uptime_seconds": uptime_seconds,
+                    "restart_count": restart_count_val,
+                }
+
+                # Get live stats (only for running containers)
+                if status_raw == "running":
+                    try:
+                        stats = await container.stats(stream=False)
+                        if isinstance(stats, list) and len(stats) > 0:
+                            stats = stats[0]
+
+                        # CPU calculation
+                        cpu_stats = stats.get("cpu_stats", {})
+                        precpu_stats = stats.get("precpu_stats", {})
+                        cpu_delta = cpu_stats.get("cpu_usage", {}).get("total_usage", 0) - precpu_stats.get("cpu_usage", {}).get("total_usage", 0)
+                        system_delta = cpu_stats.get("system_cpu_usage", 0) - precpu_stats.get("system_cpu_usage", 0)
+                        num_cpus = cpu_stats.get("online_cpus", len(cpu_stats.get("cpu_usage", {}).get("percpu_usage", [1])))
+                        if system_delta > 0 and cpu_delta > 0:
+                            entry["cpu_percent"] = round((cpu_delta / system_delta) * num_cpus * 100.0, 2)
+
+                        # Memory
+                        mem_stats = stats.get("memory_stats", {})
+                        mem_used = mem_stats.get("usage", 0) - mem_stats.get("stats", {}).get("cache", 0)
+                        mem_limit = mem_stats.get("limit", 0)
+                        entry["memory_used_mb"] = round(max(mem_used, 0) / (1024 * 1024), 1)
+                        entry["memory_limit_mb"] = round(mem_limit / (1024 * 1024), 1) if mem_limit > 0 else 512.0
+                        entry["memory_percent"] = round((mem_used / mem_limit) * 100, 1) if mem_limit > 0 else 0.0
+
+                        # Network
+                        networks = stats.get("networks", {})
+                        total_rx = sum(n.get("rx_bytes", 0) for n in networks.values())
+                        total_tx = sum(n.get("tx_bytes", 0) for n in networks.values())
+                        entry["network_rx_mb"] = round(total_rx / (1024 * 1024), 2)
+                        entry["network_tx_mb"] = round(total_tx / (1024 * 1024), 2)
+
+                        # Disk I/O
+                        blkio = stats.get("blkio_stats", {}).get("io_service_bytes_recursive", []) or []
+                        for io_entry in blkio:
+                            op = io_entry.get("op", "").lower()
+                            if op == "read":
+                                entry["disk_read_mb"] = round(io_entry.get("value", 0) / (1024 * 1024), 2)
+                            elif op == "write":
+                                entry["disk_write_mb"] = round(io_entry.get("value", 0) / (1024 * 1024), 2)
+                    except Exception as e:
+                        logger.debug("Stats fetch failed for container", container=service_name, error=str(e))
+
+                return entry
+
+            # Fetch stats for all containers in parallel
+            tasks = [get_container_stats(c) for c in containers]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in results:
+                if isinstance(r, dict):
+                    resources.append(r)
+
+            # Sort: known services first, then alphabetical
+            known_order = list(SERVICES.keys()) + ["api_gateway", "dashboard", "redis", "timescaledb"]
+            resources.sort(key=lambda x: (
+                known_order.index(x["container"]) if x["container"] in known_order else 999,
+                x["container"]
+            ))
+        finally:
+            await docker.close()
+
+        return resources
+    except Exception as e:
+        logger.warning("Docker stats unavailable, falling back to health checks", error=str(e))
+
+    # ── Fallback: health-check based metrics ─────────────────────────
+    for name, url in SERVICES.items():
+        entry = {
+            "container": name,
+            "status": "stopped",
+            "cpu_percent": 0,
+            "memory_used_mb": 0,
+            "memory_limit_mb": 512,
+            "memory_percent": 0,
+            "network_rx_mb": 0,
+            "network_tx_mb": 0,
+            "disk_read_mb": 0,
+            "disk_write_mb": 0,
+            "uptime_seconds": 0,
+            "restart_count": 0,
+        }
+        try:
+            resp = await http_client.get(f"{url}/health", timeout=3.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                entry["status"] = "running"
+                entry["uptime_seconds"] = data.get("uptime", 0)
+        except Exception:
+            entry["status"] = "stopped"
+        resources.append(entry)
+
+    # Add Redis
+    try:
+        info = await redis_client.info("memory")
+        resources.append({
+            "container": "redis",
+            "status": "running",
+            "cpu_percent": 0,
+            "memory_used_mb": round(info.get("used_memory", 0) / 1024 / 1024, 1),
+            "memory_limit_mb": 512,
+            "memory_percent": round(info.get("used_memory", 0) / (512 * 1024 * 1024) * 100, 1),
+            "network_rx_mb": 0,
+            "network_tx_mb": 0,
+            "disk_read_mb": 0,
+            "disk_write_mb": 0,
+            "uptime_seconds": info.get("uptime_in_seconds", 0),
+            "restart_count": 0,
+        })
+    except Exception:
+        pass
+
+    return resources
 
 
 @app.get("/metrics", response_class=PlainTextResponse)

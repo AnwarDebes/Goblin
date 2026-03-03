@@ -13,31 +13,44 @@ import PositionCard from "@/components/panels/PositionCard";
 import TradeHistory from "@/components/panels/TradeHistory";
 import SystemHealth from "@/components/panels/SystemHealth";
 import GoblinCoin3D from "@/components/3d/GoblinCoin3D";
+import PortfolioTreemap from "@/components/charts/PortfolioTreemap";
+import { useTilt } from "@/hooks/useTilt";
+import { useCountUp } from "@/hooks/useCountUp";
 
 function MetricCard({
   label,
   value,
+  numericValue,
   icon: Icon,
   color,
   delay = 0,
 }: {
   label: string;
   value: string;
+  numericValue?: number;
   icon: React.ElementType;
   color?: string;
   delay?: number;
 }) {
+  const tilt = useTilt(2);
+  const animatedValue = useCountUp(numericValue ?? 0, 800, 2);
+  const displayValue = numericValue !== undefined
+    ? (label === "Total Trades" ? Math.round(animatedValue).toString() : animatedValue.toFixed(2) + (label === "Win Rate" ? "%" : ""))
+    : value;
+
   return (
     <div
       className="card-hover hover-glow animate-slide-up"
-      style={{ animationDelay: `${delay}ms` }}
+      style={{ animationDelay: `${delay}ms`, ...tilt.style }}
+      onMouseMove={tilt.onMouseMove}
+      onMouseLeave={tilt.onMouseLeave}
     >
       <div className="flex items-center justify-between">
-        <p className="text-xs font-medium text-gray-500">{label}</p>
-        <Icon size={16} className={color || "text-gray-500"} />
+        <p className="text-xs font-medium text-gray-500 truncate">{label}</p>
+        <Icon size={16} className={cn("shrink-0", color || "text-gray-500")} />
       </div>
-      <p className={cn("mt-1 text-2xl font-bold", color || "text-white")}>
-        {value}
+      <p className={cn("mt-1 text-xl sm:text-2xl font-bold truncate", color || "text-white")}>
+        {displayValue}
       </p>
     </div>
   );
@@ -74,15 +87,15 @@ export default function DashboardPage() {
       : 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Hero Section */}
-      <div className="relative particles-bg rounded-2xl border border-goblin-500/10 bg-gradient-to-br from-goblin-900/20 via-gray-900 to-gray-950 p-6 overflow-hidden">
+      <div className="relative particles-bg rounded-xl sm:rounded-2xl border border-goblin-500/10 bg-gradient-to-br from-goblin-900/20 via-gray-900 to-gray-950 p-4 sm:p-6 overflow-hidden">
         <div className="relative z-10 flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-white animate-fade-in">
+            <h1 className="text-xl sm:text-3xl font-bold text-white animate-fade-in">
               Goblin <span className="text-goblin-gradient">Dashboard</span>
             </h1>
-            <p className="text-sm text-gray-400 mt-1">
+            <p className="text-xs sm:text-sm text-gray-400 mt-1">
               Real-time AI-powered portfolio overview
             </p>
           </div>
@@ -96,10 +109,11 @@ export default function DashboardPage() {
       <PortfolioCard portfolio={portfolio} isLoading={loadingPortfolio} />
 
       {/* Metrics Row */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
         <MetricCard
           label="Win Rate"
           value={formatPercent(winRate).replace("+", "")}
+          numericValue={winRate}
           icon={Trophy}
           color="text-goblin-500"
           delay={0}
@@ -107,6 +121,7 @@ export default function DashboardPage() {
         <MetricCard
           label="Sharpe Ratio"
           value={sharpe.toFixed(2)}
+          numericValue={sharpe}
           icon={TrendingUp}
           color={sharpe >= 1 ? "text-profit" : "text-neutral"}
           delay={100}
@@ -114,6 +129,7 @@ export default function DashboardPage() {
         <MetricCard
           label="Max Drawdown"
           value={formatPercent(maxDrawdown)}
+          numericValue={maxDrawdown}
           icon={TrendingDown}
           color={getPnlColor(maxDrawdown)}
           delay={200}
@@ -121,18 +137,22 @@ export default function DashboardPage() {
         <MetricCard
           label="Total Trades"
           value={totalTrades.toString()}
+          numericValue={totalTrades}
           icon={BarChart3}
           delay={300}
         />
       </div>
 
+      {/* Portfolio Treemap */}
+      <PortfolioTreemap />
+
       {/* Open Positions */}
       <div>
         <h2 className="section-title mb-3">Open Positions</h2>
         {loadingPositions ? (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="card animate-pulse h-36" />
+              <div key={i} className="card skeleton-shimmer h-36" />
             ))}
           </div>
         ) : !positions || positions.length === 0 ? (
@@ -140,7 +160,7 @@ export default function DashboardPage() {
             No open positions
           </div>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
             {positions.map((pos, i) => (
               <PositionCard key={`${pos.symbol}-${i}`} position={pos} />
             ))}

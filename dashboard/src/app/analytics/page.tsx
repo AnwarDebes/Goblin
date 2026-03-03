@@ -102,16 +102,16 @@ export default function AnalyticsPage() {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">Performance Analytics</h1>
-        <p className="text-sm text-gray-400">
+        <h1 className="text-xl sm:text-2xl font-bold text-white">Performance Analytics</h1>
+        <p className="text-xs sm:text-sm text-gray-400">
           Detailed trading performance metrics
         </p>
       </div>
 
       {/* Key Metrics */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-3 xl:grid-cols-5">
         <StatCard
           label="Sharpe Ratio"
           value={sharpe.toFixed(2)}

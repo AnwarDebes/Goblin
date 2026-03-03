@@ -23,15 +23,15 @@ export default function SentimentPage() {
       : 50;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">Market Sentiment</h1>
-        <p className="text-sm text-gray-400">
+        <h1 className="text-xl sm:text-2xl font-bold text-white">Market Sentiment</h1>
+        <p className="text-xs sm:text-sm text-gray-400">
           Fear & Greed index and per-symbol analysis
         </p>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-4 sm:gap-6 lg:grid-cols-3">
         {/* Fear & Greed Gauge */}
         <div className="card lg:col-span-1">
           <h3 className="mb-4 text-center font-semibold text-white">

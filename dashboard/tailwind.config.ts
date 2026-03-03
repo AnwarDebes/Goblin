@@ -38,6 +38,10 @@ const config: Config = {
         "coin-spin": "coin-spin 8s linear infinite",
         "pulse-green": "pulse-green 2s ease-in-out infinite",
         "particle-rise": "particle-rise 4s ease-out infinite",
+        "log-flash": "log-flash 0.5s ease-out",
+        "goblin-blink": "goblin-blink 4s ease-in-out infinite",
+        "goblin-breathe": "goblin-breathe 3s ease-in-out infinite",
+        "scan-line": "scan-line 8s linear infinite",
       },
       keyframes: {
         float: {
@@ -71,6 +75,22 @@ const config: Config = {
         "particle-rise": {
           "0%": { transform: "translateY(0) scale(1)", opacity: "1" },
           "100%": { transform: "translateY(-100px) scale(0)", opacity: "0" },
+        },
+        "log-flash": {
+          "0%": { backgroundColor: "rgba(34,197,94,0.15)" },
+          "100%": { backgroundColor: "transparent" },
+        },
+        "goblin-blink": {
+          "0%, 90%, 100%": { transform: "scaleY(1)" },
+          "95%": { transform: "scaleY(0.1)" },
+        },
+        "goblin-breathe": {
+          "0%, 100%": { transform: "scale(1)" },
+          "50%": { transform: "scale(1.04)" },
+        },
+        "scan-line": {
+          "0%": { transform: "translateX(-100%)" },
+          "100%": { transform: "translateX(100%)" },
         },
       },
       backgroundImage: {

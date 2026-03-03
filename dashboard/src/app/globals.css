@@ -274,3 +274,233 @@
   transform: translateY(-2px);
   box-shadow: 0 4px 20px rgba(34,197,94,0.4);
 }
+
+/* ── GoblinBackground floating silhouettes ────────────────────────── */
+
+@keyframes goblin-float-up {
+  0% {
+    transform: translateY(0) translateX(0);
+    opacity: 0;
+    top: var(--start-top, 100%);
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-120vh) translateX(var(--drift, 0px));
+    opacity: 0;
+    top: var(--start-top, 100%);
+  }
+}
+
+/* Ambient glow orb drift animations */
+@keyframes orb-drift-0 {
+  0%, 100% { transform: translate(-50%, -50%) translate(0, 0); }
+  33% { transform: translate(-50%, -50%) translate(30px, -20px); }
+  66% { transform: translate(-50%, -50%) translate(-20px, 15px); }
+}
+@keyframes orb-drift-1 {
+  0%, 100% { transform: translate(-50%, -50%) translate(0, 0); }
+  33% { transform: translate(-50%, -50%) translate(-25px, 30px); }
+  66% { transform: translate(-50%, -50%) translate(20px, -10px); }
+}
+@keyframes orb-drift-2 {
+  0%, 100% { transform: translate(-50%, -50%) translate(0, 0); }
+  33% { transform: translate(-50%, -50%) translate(15px, 25px); }
+  66% { transform: translate(-50%, -50%) translate(-30px, -20px); }
+}
+@keyframes orb-drift-3 {
+  0%, 100% { transform: translate(-50%, -50%) translate(0, 0); }
+  33% { transform: translate(-50%, -50%) translate(-20px, -30px); }
+  66% { transform: translate(-50%, -50%) translate(25px, 20px); }
+}
+
+/* ── Log flash animation ──────────────────────────────────────────── */
+
+.animate-log-flash {
+  animation: log-flash 0.5s ease-out;
+}
+
+/* ── Skeleton shimmer loading state ───────────────────────────────── */
+
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+  background: #111827;
+}
+
+.skeleton-shimmer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255,255,255,0.03) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-sweep 1.5s ease-in-out infinite;
+}
+
+@keyframes shimmer-sweep {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Sidebar nav glow trail ───────────────────────────────────────── */
+
+.sidebar-nav-item::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  background: radial-gradient(circle at center, rgba(34,197,94,0.15), transparent 70%);
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.sidebar-nav-item:hover::after {
+  opacity: 1;
+}
+
+/* ── Goblin mascot animations ─────────────────────────────────────── */
+
+.goblin-mascot {
+  animation: goblin-breathe 3s ease-in-out infinite;
+}
+
+.goblin-mascot .goblin-eyes {
+  animation: goblin-blink 4s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* ── Header CRT scanning line ─────────────────────────────────────── */
+
+.header-scan-line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.header-scan-line::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(34,197,94,0.05),
+    transparent
+  );
+  animation: scan-line 8s linear infinite;
+}
+
+/* ── Toast slide-in animation ──────────────────────────────────────── */
+
+@keyframes toast-slide-in {
+  0% {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  100% {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* ── Particle burst for profit celebrations ────────────────────────── */
+
+@keyframes particle-burst {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--px, 20px), var(--py, -30px)) scale(0);
+    opacity: 0;
+  }
+}
+
+/* ── Screen shake for loss notifications ───────────────────────────── */
+
+@keyframes screen-shake {
+  0%, 100% { transform: translateX(0); }
+  10%, 50%, 90% { transform: translateX(-2px); }
+  30%, 70% { transform: translateX(2px); }
+}
+
+.screen-shake {
+  animation: screen-shake 0.3s ease-in-out;
+}
+
+/* ── Coin rain for big profits ─────────────────────────────────────── */
+
+@keyframes coin-fall {
+  0% {
+    transform: translateY(-20px) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(100vh) rotate(720deg);
+    opacity: 0;
+  }
+}
+
+/* ── Price ticker marquee ──────────────────────────────────────────── */
+
+@keyframes ticker-scroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.ticker-scroll {
+  animation: ticker-scroll 30s linear infinite;
+}
+
+.ticker-scroll:hover {
+  animation-play-state: paused;
+}
+
+/* ── Slide-in-right for panels ────────────────────────────────────── */
+
+@keyframes slide-in-right {
+  0% { transform: translateX(100%); }
+  100% { transform: translateX(0); }
+}
+
+/* ── Mobile touch improvements ────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .card {
+    @apply p-3;
+  }
+
+  .section-title {
+    @apply text-base;
+  }
+}
+
+/* ── Reduced motion ────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

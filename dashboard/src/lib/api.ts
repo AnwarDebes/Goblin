@@ -4,12 +4,15 @@ import type {
   Position,
   SentimentData,
   Signal,
+  SignalExplanation,
   SystemHealth,
   Trade,
 } from "@/types";
 
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+
+/* ── Helpers ──────────────────────────────────────────────────────── */
 
 function asNumber(value: unknown, fallback = 0): number {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -53,6 +56,8 @@ async function requestJson<T = unknown>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/* ── Mappers ─────────────────────────────────────────────────────── */
+
 function mapPortfolio(payload: unknown): PortfolioState {
   const root = asRecord(payload);
   const summary = asRecord(root.summary);
@@ -87,7 +92,7 @@ function mapPosition(symbolKey: string, rawValue: unknown): Position {
     symbol: String(row.symbol || symbolKey || "").toUpperCase(),
     side: toPositionSide(row.side),
     entry_price: asNumber(row.entry_price),
-    current_price: asNumber(row.current_price, asNumber(row.entry_price)),
+    current_price: asNumber(row.current_price, asNumber(row.price, asNumber(row.entry_price))),
     amount: asNumber(row.amount),
     unrealized_pnl: asNumber(row.unrealized_pnl),
     stop_loss_price: asNumber(row.stop_loss_price),
@@ -142,20 +147,14 @@ function mapTrade(rawValue: unknown): Trade {
 }
 
 function normalizeSentimentScore(score: number): number {
-  // Backends may provide [-1,1], [0,1], or [0,100]. UI expects [0,100].
-  if (score >= -1 && score <= 1) {
-    return (score + 1) * 50;
-  }
-  if (score >= 0 && score <= 1) {
-    return score * 100;
-  }
+  if (score >= -1 && score <= 1) return (score + 1) * 50;
+  if (score >= 0 && score <= 1) return score * 100;
   return Math.max(0, Math.min(100, score));
 }
 
 function mapSentiment(symbol: string, rawValue: unknown, fearGreed: number): SentimentData {
   const row = asRecord(rawValue);
   const rawScore = asNumber(row.score);
-
   return {
     symbol: symbol.toUpperCase(),
     score: normalizeSentimentScore(rawScore),
@@ -169,89 +168,121 @@ function mapSentiment(symbol: string, rawValue: unknown, fearGreed: number): Sen
   };
 }
 
+/* ── Core API Functions ──────────────────────────────────────────── */
+
 export async function getPortfolio(): Promise<PortfolioState> {
   try {
     const data = await requestJson("/api/v2/portfolio");
     return mapPortfolio(data);
-  } catch {
-    const data = await requestJson("/api/portfolio");
-    return mapPortfolio(data);
+  } catch (err) {
+    console.error("[api] getPortfolio failed:", err);
+    return { total_value: 0, cash_balance: 0, positions_value: 0, daily_pnl: 0, open_positions: 0 };
   }
 }
 
 export async function getPositions(): Promise<Position[]> {
-  let data: unknown;
   try {
-    data = await requestJson("/api/v2/positions");
-  } catch {
-    data = await requestJson("/api/positions");
-  }
+    let data: unknown;
+    try {
+      data = await requestJson("/api/v2/positions");
+    } catch {
+      data = await requestJson("/api/positions");
+    }
 
-  const root = asRecord(data);
-  const mapSource =
-    Object.keys(root).length > 0 && !Array.isArray(data)
+    // Handle executor paper_portfolio format: { balances: {...}, summary: { positions: {...} } }
+    const root = asRecord(data);
+    const balSummary = asRecord(root.summary);
+    const summaryPositions = asRecord(balSummary.positions);
+
+    // If executor returns paper positions in summary.positions
+    if (Object.keys(summaryPositions).length > 0) {
+      return Object.entries(summaryPositions)
+        .map(([symbol, value]) => {
+          const pos = asRecord(value);
+          return {
+            symbol: symbol.toUpperCase(),
+            side: "long" as const,
+            entry_price: asNumber(pos.price),
+            current_price: asNumber(pos.price),
+            amount: asNumber(pos.amount),
+            unrealized_pnl: 0,
+            stop_loss_price: 0,
+            take_profit_price: 0,
+            opened_at: new Date().toISOString(),
+          };
+        })
+        .filter((p) => p.amount > 0);
+    }
+
+    // Standard position service format: { "BTC/USDT": {...}, ... }
+    const mapSource = Object.keys(root).length > 0 && !Array.isArray(data)
       ? root
       : asRecord((data as Record<string, unknown> | undefined)?.positions);
 
-  return Object.entries(mapSource)
-    .map(([symbol, value]) => mapPosition(symbol, value))
-    .filter((p) => p.symbol.length > 0);
+    return Object.entries(mapSource)
+      .filter(([k]) => k !== "summary" && k !== "balances" && k !== "simulated")
+      .map(([symbol, value]) => mapPosition(symbol, value))
+      .filter((p) => p.symbol.length > 0 && p.amount > 0);
+  } catch (err) {
+    console.error("[api] getPositions failed:", err);
+    return [];
+  }
 }
 
 export async function getTrades(): Promise<Trade[]> {
-  let data: unknown;
   try {
-    data = await requestJson("/api/v2/trades");
-  } catch {
-    data = await requestJson("/api/trades");
+    let data: unknown;
+    try {
+      data = await requestJson("/api/v2/trades");
+    } catch {
+      data = await requestJson("/api/trades");
+    }
+
+    const root = asRecord(data);
+    const items = Array.isArray(data)
+      ? data
+      : Array.isArray(root.trades)
+      ? root.trades
+      : [];
+
+    return items
+      .map((item) => mapTrade(item))
+      .sort((a, b) => new Date(b.closed_at).getTime() - new Date(a.closed_at).getTime());
+  } catch (err) {
+    console.error("[api] getTrades failed:", err);
+    return [];
   }
-
-  const root = asRecord(data);
-  const items = Array.isArray(data)
-    ? data
-    : Array.isArray(root.trades)
-    ? root.trades
-    : [];
-
-  return items
-    .map((item) => mapTrade(item))
-    .sort(
-      (a, b) =>
-        new Date(b.closed_at).getTime() - new Date(a.closed_at).getTime()
-    );
 }
 
 export async function getSignals(): Promise<Signal[]> {
-  let data: unknown;
   try {
-    data = await requestJson("/api/v2/signals");
-  } catch {
-    data = await requestJson("/api/signals");
+    let data: unknown;
+    try {
+      data = await requestJson("/api/v2/signals");
+    } catch {
+      data = await requestJson("/api/signals");
+    }
+
+    const items = Array.isArray(data) ? data : Object.values(asRecord(data));
+
+    return items
+      .map((raw) => {
+        const row = asRecord(raw);
+        return {
+          signal_id: String(row.signal_id || `${String(row.symbol || "UNKNOWN")}_${toIso(row.timestamp)}`),
+          symbol: String(row.symbol || "").toUpperCase(),
+          action: toSignalAction(row.action),
+          confidence: asNumber(row.confidence),
+          price: asNumber(row.price),
+          timestamp: toIso(row.timestamp),
+        } as Signal;
+      })
+      .filter((s) => s.symbol.length > 0)
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  } catch (err) {
+    console.error("[api] getSignals failed:", err);
+    return [];
   }
-
-  const items = Array.isArray(data)
-    ? data
-    : Object.values(asRecord(data));
-
-  return items
-    .map((raw) => {
-      const row = asRecord(raw);
-      return {
-        signal_id: String(
-          row.signal_id ||
-            `${String(row.symbol || "UNKNOWN")}_${toIso(row.timestamp)}`
-        ),
-        symbol: String(row.symbol || "").toUpperCase(),
-        action: toSignalAction(row.action),
-        confidence: asNumber(row.confidence),
-        price: asNumber(row.price),
-        timestamp: toIso(row.timestamp),
-      } as Signal;
-    })
-    .filter((s) => s.symbol.length > 0)
-    .sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    );
 }
 
 export async function getSystemHealth(): Promise<SystemHealth[]> {
@@ -264,106 +295,339 @@ export async function getSystemHealth(): Promise<SystemHealth[]> {
     return services.map((raw) => {
       const row = asRecord(raw);
       const status = String(row.status || "down").toLowerCase();
-
       return {
         service_name: String(row.name || row.service_name || "unknown"),
-        status:
-          status === "healthy"
-            ? "healthy"
-            : status === "degraded"
-            ? "degraded"
-            : "down",
+        status: status === "healthy" ? "healthy" : status === "degraded" ? "degraded" : "down",
         uptime: asNumber(row.uptime, 0),
         last_heartbeat: toIso(row.last_heartbeat || row.timestamp),
       } as SystemHealth;
     });
   } catch {
-    const statusResp = await requestJson("/status");
-    const servicesMap = asRecord(asRecord(statusResp).services);
-
-    return Object.entries(servicesMap).map(([name, info]) => {
-      const row = asRecord(info);
-      const healthy = Boolean(row.healthy);
-      return {
-        service_name: name,
-        status: healthy ? "healthy" : "down",
-        uptime: 0,
-        last_heartbeat: new Date().toISOString(),
-      } as SystemHealth;
-    });
+    try {
+      const statusResp = await requestJson("/status");
+      const servicesMap = asRecord(asRecord(statusResp).services);
+      return Object.entries(servicesMap).map(([name, info]) => {
+        const row = asRecord(info);
+        return {
+          service_name: name,
+          status: row.healthy ? "healthy" : "down",
+          uptime: 0,
+          last_heartbeat: new Date().toISOString(),
+        } as SystemHealth;
+      });
+    } catch (err) {
+      console.error("[api] getSystemHealth failed:", err);
+      return [];
+    }
   }
 }
 
 export async function getSentiment(): Promise<SentimentData[]> {
-  const data = await requestJson("/api/v2/sentiment");
-  const root = asRecord(data);
+  try {
+    const data = await requestJson("/api/v2/sentiment");
+    const root = asRecord(data);
+    const fearGreed = asNumber(asRecord(root.fear_greed).value, 50);
 
-  const fearGreed = asNumber(asRecord(root.fear_greed).value, 50);
+    const symbolsFromNested = asRecord(root.symbols);
+    if (Object.keys(symbolsFromNested).length > 0) {
+      return Object.entries(symbolsFromNested)
+        .map(([symbol, value]) => mapSentiment(symbol, value, fearGreed))
+        .sort((a, b) => b.score - a.score);
+    }
 
-  // Shape A: { symbols: { BTC/USDT: {...} }, fear_greed: {...} }
-  const symbolsFromNested = asRecord(root.symbols);
-  if (Object.keys(symbolsFromNested).length > 0) {
-    return Object.entries(symbolsFromNested)
-      .map(([symbol, value]) => mapSentiment(symbol, value, fearGreed))
-      .sort((a, b) => b.score - a.score);
+    const directEntries = Object.entries(root).filter(
+      ([k, v]) => k !== "fear_greed" && k !== "symbols" && typeof v === "object"
+    );
+    if (directEntries.length > 0) {
+      return directEntries
+        .map(([symbol, value]) => mapSentiment(symbol, value, fearGreed))
+        .sort((a, b) => b.score - a.score);
+    }
+    return [];
+  } catch (err) {
+    console.error("[api] getSentiment failed:", err);
+    return [];
   }
-
-  // Shape B: { BTC/USDT: {...}, ETH/USDT: {...} }
-  const directEntries = Object.entries(root).filter(
-    ([k, v]) => k !== "fear_greed" && k !== "symbols" && typeof v === "object"
-  );
-  if (directEntries.length > 0) {
-    return directEntries
-      .map(([symbol, value]) => mapSentiment(symbol, value, fearGreed))
-      .sort((a, b) => b.score - a.score);
-  }
-
-  return [];
 }
 
 export async function getModelStatus(): Promise<ModelStatus[]> {
-  const data = await requestJson("/api/v2/models");
-  const root = asRecord(data);
+  try {
+    const data = await requestJson("/api/v2/models");
+    const root = asRecord(data);
 
-  // Shape A: future/legacy array form
-  const modelsArray = Array.isArray(root.models) ? (root.models as unknown[]) : [];
-  if (modelsArray.length > 0) {
-    return modelsArray.map((raw) => {
-      const row = asRecord(raw);
-      const statusRaw = String(row.status || "inactive").toLowerCase();
-      return {
-        model_name: String(row.model_name || row.name || "unknown"),
-        version: String(row.version || "n/a"),
-        accuracy: asNumber(row.accuracy, 0),
-        last_retrain: toIso(row.last_retrain || row.updated_at),
-        status:
-          statusRaw === "active" || statusRaw === "training"
+    const modelsArray = Array.isArray(root.models) ? (root.models as unknown[]) : [];
+    if (modelsArray.length > 0) {
+      return modelsArray.map((raw) => {
+        const row = asRecord(raw);
+        const statusRaw = String(row.status || "inactive").toLowerCase();
+        return {
+          model_name: String(row.model_name || row.name || "unknown"),
+          version: String(row.version || "n/a"),
+          accuracy: asNumber(row.accuracy, 0),
+          last_retrain: toIso(row.last_retrain || row.updated_at),
+          status: statusRaw === "active" || statusRaw === "training"
             ? (statusRaw as ModelStatus["status"])
             : "inactive",
+        };
+      });
+    }
+
+    const tcnLoaded = Boolean(root.tcn_loaded);
+    const xgbLoaded = Boolean(root.xgb_loaded);
+    const mode = String(root.mode || "legacy").toLowerCase();
+    const now = new Date().toISOString();
+
+    return [
+      {
+        model_name: "tcn",
+        version: String(root.tcn_version || "unavailable"),
+        accuracy: tcnLoaded ? (mode === "ml" ? 0.7 : 0.55) : 0,
+        last_retrain: now,
+        status: tcnLoaded ? "active" : "inactive",
+      },
+      {
+        model_name: "xgboost",
+        version: String(root.xgb_version || "unavailable"),
+        accuracy: xgbLoaded ? (mode === "ml" ? 0.7 : 0.55) : 0,
+        last_retrain: now,
+        status: xgbLoaded ? "active" : "inactive",
+      },
+    ];
+  } catch (err) {
+    console.error("[api] getModelStatus failed:", err);
+    return [];
+  }
+}
+
+/* ── Container Logs ────────────────────────────────────────────────── */
+
+export interface ContainerLog {
+  container: string;
+  timestamp: string;
+  level: "info" | "warn" | "error" | "debug";
+  message: string;
+}
+
+export async function getContainerLogs(
+  container?: string,
+  limit?: number,
+  level?: string,
+  since?: string
+): Promise<ContainerLog[]> {
+  try {
+    const params = new URLSearchParams();
+    if (container) params.set("container", container);
+    if (limit) params.set("limit", limit.toString());
+    if (level) params.set("level", level);
+    if (since) params.set("since", since);
+    const data = await requestJson<unknown>(`/api/v2/logs?${params.toString()}`);
+    if (!Array.isArray(data)) return [];
+    return data.map((raw) => {
+      const row = asRecord(raw);
+      const lvl = String(row.level || "info").toLowerCase();
+      return {
+        container: String(row.container || "unknown"),
+        timestamp: toIso(row.timestamp),
+        level: (["info", "warn", "error", "debug"].includes(lvl) ? lvl : "info") as ContainerLog["level"],
+        message: String(row.message || ""),
       };
     });
+  } catch (err) {
+    console.error("[api] getContainerLogs failed:", err);
+    return [];
   }
+}
 
-  // Shape B: prediction /model-status contract
-  const tcnLoaded = Boolean(root.tcn_loaded);
-  const xgbLoaded = Boolean(root.xgb_loaded);
-  const mode = String(root.mode || "legacy").toLowerCase();
-  const now = new Date().toISOString();
+/* ── Resource Metrics ──────────────────────────────────────────────── */
 
-  return [
-    {
-      model_name: "tcn",
-      version: String(root.tcn_version || "unavailable"),
-      accuracy: tcnLoaded ? (mode === "ml" ? 0.7 : 0.55) : 0,
-      last_retrain: now,
-      status: tcnLoaded ? "active" : "inactive",
-    },
-    {
-      model_name: "xgboost",
-      version: String(root.xgb_version || "unavailable"),
-      accuracy: xgbLoaded ? (mode === "ml" ? 0.7 : 0.55) : 0,
-      last_retrain: now,
-      status: xgbLoaded ? "active" : "inactive",
-    },
-  ];
+export interface ResourceMetrics {
+  container: string;
+  cpu_percent: number;
+  memory_used_mb: number;
+  memory_limit_mb: number;
+  memory_percent: number;
+  network_rx_mb: number;
+  network_tx_mb: number;
+  disk_read_mb: number;
+  disk_write_mb: number;
+  uptime_seconds: number;
+  restart_count: number;
+  status: "running" | "stopped" | "restarting" | "paused";
+}
+
+export async function getResourceMetrics(): Promise<ResourceMetrics[]> {
+  try {
+    const data = await requestJson<unknown[]>("/api/v2/resources");
+    if (!Array.isArray(data)) return [];
+    return data.map((raw) => {
+      const row = asRecord(raw);
+      return {
+        container: String(row.container || "unknown"),
+        cpu_percent: asNumber(row.cpu_percent),
+        memory_used_mb: asNumber(row.memory_used_mb),
+        memory_limit_mb: asNumber(row.memory_limit_mb, 512),
+        memory_percent: asNumber(row.memory_percent),
+        network_rx_mb: asNumber(row.network_rx_mb),
+        network_tx_mb: asNumber(row.network_tx_mb),
+        disk_read_mb: asNumber(row.disk_read_mb),
+        disk_write_mb: asNumber(row.disk_write_mb),
+        uptime_seconds: asNumber(row.uptime_seconds),
+        restart_count: asNumber(row.restart_count),
+        status: (["running", "stopped", "restarting", "paused"].includes(String(row.status))
+          ? String(row.status)
+          : "stopped") as ResourceMetrics["status"],
+      };
+    });
+  } catch (err) {
+    console.error("[api] getResourceMetrics failed:", err);
+    return [];
+  }
+}
+
+/* ── Signal Explanation ────────────────────────────────────────────── */
+
+export async function getSignalExplanation(signalId: string, symbol: string): Promise<SignalExplanation | null> {
+  try {
+    return await requestJson(`/api/v2/signals/${signalId}/explain`);
+  } catch {
+    // Build explanation from available ticker data
+    try {
+      const ticker = await getTicker(symbol);
+      const t = asRecord(ticker);
+      const price = asNumber(t.lastPrice, asNumber(t.price));
+      return {
+        signal_id: signalId,
+        symbol,
+        action: "HOLD",
+        confidence: 0.5,
+        timestamp: new Date().toISOString(),
+        tcn_prediction: { direction: "HOLD", confidence: 0.5, weight: 0.6 },
+        xgb_prediction: { direction: "HOLD", confidence: 0.5, weight: 0.4 },
+        models_agree: true,
+        top_factors: [],
+        market_snapshot: {
+          price,
+          rsi: 50,
+          macd_signal: "neutral",
+          volume_vs_avg: 1,
+          trend: "sideways",
+          volatility: "medium",
+          support_level: price * 0.95,
+          resistance_level: price * 1.05,
+        },
+        risk_assessment: {
+          risk_score: 50,
+          position_size_pct: 10,
+          stop_loss: price * 0.97,
+          take_profit: price * 1.03,
+          risk_reward_ratio: 1.5,
+        },
+      };
+    } catch {
+      return null;
+    }
+  }
+}
+
+/* ── MEXC Market Data Proxy ──────────────────────────────────────── */
+
+export interface Candle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export async function getCandles(symbol: string, interval: string = "1h", limit: number = 200): Promise<Candle[]> {
+  try {
+    return await requestJson(`/api/v2/candles?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`);
+  } catch (err) {
+    console.error("[api] getCandles failed:", err);
+    return [];
+  }
+}
+
+export interface DepthData {
+  bids: [string, string][];
+  asks: [string, string][];
+}
+
+export async function getDepth(symbol: string, limit: number = 20): Promise<DepthData> {
+  try {
+    return await requestJson(`/api/v2/depth?symbol=${encodeURIComponent(symbol)}&limit=${limit}`);
+  } catch (err) {
+    console.error("[api] getDepth failed:", err);
+    return { bids: [], asks: [] };
+  }
+}
+
+export async function getTicker(symbol?: string): Promise<unknown> {
+  try {
+    const params = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+    return await requestJson(`/api/v2/ticker${params}`);
+  } catch (err) {
+    console.error("[api] getTicker failed:", err);
+    return {};
+  }
+}
+
+export interface TickerPrice {
+  symbol: string;
+  price: string;
+  lastPrice: string;
+  priceChangePercent: string;
+  volume: string;
+}
+
+export async function getAllTickers(): Promise<TickerPrice[]> {
+  try {
+    // Try batch prices endpoint first
+    try {
+      const prices = await requestJson<Array<{ symbol: string; price: string }>>("/api/v2/prices");
+      if (Array.isArray(prices) && prices.length > 0) {
+        // Also fetch 24hr change data in parallel for each tracked symbol
+        const tracked = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT"];
+        const priceMap = new Map(prices.map((p) => [p.symbol, p.price]));
+        const tickerResults = await Promise.allSettled(
+          tracked.map((sym) => requestJson<Record<string, string>>(`/api/v2/ticker?symbol=${sym}`))
+        );
+        return tracked.map((sym, i) => {
+          const res = tickerResults[i];
+          const data = res.status === "fulfilled" ? res.value : {};
+          return {
+            symbol: sym,
+            price: data.lastPrice || priceMap.get(sym) || "0",
+            lastPrice: data.lastPrice || priceMap.get(sym) || "0",
+            priceChangePercent: data.priceChangePercent || "0",
+            volume: data.volume || "0",
+          };
+        });
+      }
+    } catch {}
+
+    // Fallback: fetch each ticker in parallel
+    const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT"];
+    const results = await Promise.allSettled(
+      symbols.map((sym) => requestJson<Record<string, string>>(`/api/v2/ticker?symbol=${sym}`))
+    );
+    return symbols
+      .map((sym, i) => {
+        const res = results[i];
+        if (res.status !== "fulfilled") return null;
+        const data = res.value;
+        return {
+          symbol: sym,
+          price: data.lastPrice || "0",
+          lastPrice: data.lastPrice || "0",
+          priceChangePercent: data.priceChangePercent || "0",
+          volume: data.volume || "0",
+        };
+      })
+      .filter((t): t is TickerPrice => t !== null);
+  } catch (err) {
+    console.error("[api] getAllTickers failed:", err);
+    return [];
+  }
 }

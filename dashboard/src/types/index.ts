@@ -65,3 +65,38 @@ export interface ModelStatus {
   last_retrain: string;
   status: "active" | "training" | "inactive";
 }
+
+export interface SignalExplanation {
+  signal_id: string;
+  symbol: string;
+  action: "BUY" | "SELL" | "HOLD";
+  confidence: number;
+  timestamp: string;
+  tcn_prediction: { direction: string; confidence: number; weight: number };
+  xgb_prediction: { direction: string; confidence: number; weight: number };
+  models_agree: boolean;
+  top_factors: Array<{
+    feature: string;
+    value: number;
+    impact: number;
+    direction: "bullish" | "bearish" | "neutral";
+    description: string;
+  }>;
+  market_snapshot: {
+    price: number;
+    rsi: number;
+    macd_signal: "bullish" | "bearish" | "neutral";
+    volume_vs_avg: number;
+    trend: "uptrend" | "downtrend" | "sideways";
+    volatility: "low" | "medium" | "high";
+    support_level: number;
+    resistance_level: number;
+  };
+  risk_assessment: {
+    risk_score: number;
+    position_size_pct: number;
+    stop_loss: number;
+    take_profit: number;
+    risk_reward_ratio: number;
+  };
+}

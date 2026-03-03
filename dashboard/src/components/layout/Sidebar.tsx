@@ -9,6 +9,8 @@ import {
   Brain,
   Server,
   Coins,
+  ScrollText,
+  FlaskConical,
   Menu,
   X,
 } from "lucide-react";
@@ -19,9 +21,11 @@ const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/trading", label: "Trading", icon: CandlestickChart },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/backtesting", label: "Backtesting", icon: FlaskConical },
   { href: "/sentiment", label: "Sentiment", icon: Brain },
   { href: "/goblin-coin", label: "GBLN Coin", icon: Coins },
   { href: "/system", label: "System", icon: Server },
+  { href: "/logs", label: "Logs", icon: ScrollText },
 ];
 
 function GoblinLogo({ size = 36 }: { size?: number }) {
@@ -128,7 +132,7 @@ export default function Sidebar() {
                 href={item.href}
                 onClick={() => setMobileOpen(false)}
                 className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200",
+                  "relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200 sidebar-nav-item",
                   isActive
                     ? "bg-goblin-500/10 text-goblin-400 border border-goblin-500/20 glow-green-sm"
                     : "text-gray-400 hover:bg-gray-800/50 hover:text-white border border-transparent",
@@ -147,13 +151,40 @@ export default function Sidebar() {
           })}
         </nav>
 
-        {/* Footer */}
+        {/* Footer with Goblin Mascot */}
         <div className="border-t border-gray-800/50 px-6 py-4">
-          <div className="flex items-center gap-2">
-            <div className="h-1.5 w-1.5 rounded-full bg-goblin-500 animate-pulse" />
-            <p className="text-xs text-gray-500">Goblin v2.0</p>
+          <div className="flex items-center gap-3">
+            {/* Animated mini goblin mascot */}
+            <svg width="32" height="32" viewBox="0 0 256 256" className="shrink-0 goblin-mascot">
+              <defs>
+                <linearGradient id="mascotSkin" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" style={{ stopColor: "#7cb342" }} />
+                  <stop offset="100%" style={{ stopColor: "#558b2f" }} />
+                </linearGradient>
+              </defs>
+              <ellipse cx="50" cy="100" rx="22" ry="35" fill="#8bc34a" transform="rotate(-30 50 100)" />
+              <ellipse cx="206" cy="100" rx="22" ry="35" fill="#8bc34a" transform="rotate(30 206 100)" />
+              <ellipse cx="128" cy="140" rx="65" ry="60" fill="url(#mascotSkin)" />
+              {/* Eyes with blink animation */}
+              <g className="goblin-eyes">
+                <ellipse cx="102" cy="132" rx="16" ry="20" fill="#fff" />
+                <ellipse cx="105" cy="134" rx="9" ry="11" fill="#2d2d2d" />
+                <circle cx="109" cy="128" r="3.5" fill="#fff" />
+                <ellipse cx="154" cy="132" rx="16" ry="20" fill="#fff" />
+                <ellipse cx="157" cy="134" rx="9" ry="11" fill="#2d2d2d" />
+                <circle cx="161" cy="128" r="3.5" fill="#fff" />
+              </g>
+              <ellipse cx="128" cy="156" rx="8" ry="5" fill="#558b2f" />
+              <path d="M105 172 Q128 190 151 172" stroke="#2d2d2d" strokeWidth="3" fill="none" strokeLinecap="round" />
+            </svg>
+            <div>
+              <div className="flex items-center gap-2">
+                <div className="h-1.5 w-1.5 rounded-full bg-goblin-500 animate-pulse" />
+                <p className="text-xs text-gray-500">Goblin v2.0</p>
+              </div>
+              <p className="text-xs text-gray-600 mt-0.5">AI Trading Platform</p>
+            </div>
           </div>
-          <p className="text-xs text-gray-600 mt-0.5">AI Trading Platform</p>
         </div>
       </aside>
     </>
