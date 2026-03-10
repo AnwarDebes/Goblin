@@ -12,6 +12,11 @@ import CelebrationEffects from "@/components/effects/CelebrationEffects";
 import DynamicFavicon from "@/components/effects/DynamicFavicon";
 import KeyboardShortcuts from "@/components/modals/KeyboardShortcuts";
 import GoblinChat from "@/components/GoblinChat";
+import dynamic from "next/dynamic";
+
+const FamiliarOverlay = dynamic(() => import("@/components/familiar/FamiliarOverlay"), {
+  ssr: false,
+});
 
 export const metadata: Metadata = {
   title: "Goblin - AI Trading Dashboard",
@@ -34,6 +39,7 @@ export default function RootLayout({
           <DynamicFavicon />
           <KeyboardShortcuts />
           <GoblinChat />
+          <FamiliarOverlay />
           <GoblinBackground />
           <div className="relative z-10 flex h-screen overflow-hidden">
             <Sidebar />

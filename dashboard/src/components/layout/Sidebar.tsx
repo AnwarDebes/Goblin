@@ -19,6 +19,7 @@ import {
   LineChart,
   Menu,
   X,
+  Store,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
@@ -35,6 +36,7 @@ const navItems = [
   { href: "/market", label: "Market Intel", icon: Globe },
   { href: "/derivatives", label: "Derivatives", icon: LineChart },
   { href: "/sentiment", label: "Sentiment", icon: Brain },
+  { href: "/goblin-shop", label: "Goblin Shop", icon: Store },
   { href: "/goblin-coin", label: "GBLN Coin", icon: Coins },
   { href: "/system", label: "System", icon: Server },
   { href: "/logs", label: "Logs", icon: ScrollText },
@@ -138,6 +140,7 @@ export default function Sidebar() {
               pathname === item.href ||
               (item.href !== "/" && pathname.startsWith(item.href));
             const isGbln = item.href === "/goblin-coin";
+            const isShop = item.href === "/goblin-shop";
             const isNerveCenter = item.href === "/nerve-center";
             return (
               <Link
@@ -155,6 +158,11 @@ export default function Sidebar() {
                 <item.icon size={20} className={isGbln && !isActive ? "text-gold-500/80" : ""} />
                 {item.label}
                 {isGbln && (
+                  <span className="ml-auto text-[9px] font-bold bg-gold-500/20 text-gold-400 px-1.5 py-0.5 rounded-full">
+                    NEW
+                  </span>
+                )}
+                {isShop && (
                   <span className="ml-auto text-[9px] font-bold bg-gold-500/20 text-gold-400 px-1.5 py-0.5 rounded-full">
                     NEW
                   </span>
