@@ -98,6 +98,15 @@ const config: Config = {
         "gold-gradient": "linear-gradient(135deg, #f59e0b, #fbbf24, #f59e0b)",
         "card-gradient": "linear-gradient(180deg, rgba(22,101,52,0.1) 0%, rgba(3,7,18,0) 100%)",
       },
+      height: {
+        dvh: "100dvh",
+      },
+      minHeight: {
+        dvh: "100dvh",
+      },
+      screens: {
+        xs: "375px",
+      },
     },
   },
   plugins: [],

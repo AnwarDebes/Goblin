@@ -76,9 +76,10 @@ export default function GoblinChat() {
       {!isOpen && (
         <button
           onClick={toggleOpen}
-          className="fixed bottom-6 right-6 z-50 h-12 w-12 rounded-full bg-goblin-500 shadow-lg shadow-goblin-500/20 flex items-center justify-center hover:bg-goblin-600 transition-all hover:scale-105"
+          className="fixed bottom-4 sm:bottom-6 right-4 sm:right-6 z-50 h-10 w-10 sm:h-12 sm:w-12 rounded-full bg-goblin-500 shadow-lg shadow-goblin-500/20 flex items-center justify-center hover:bg-goblin-600 transition-all hover:scale-105"
         >
-          <MessageCircle size={22} className="text-white" />
+          <MessageCircle size={18} className="text-white sm:hidden" />
+          <MessageCircle size={22} className="text-white hidden sm:block" />
         </button>
       )}
 
@@ -87,7 +88,7 @@ export default function GoblinChat() {
         <div className={cn(
           "fixed z-50 flex flex-col",
           // Mobile: full screen; Desktop: fixed panel
-          "inset-0 sm:inset-auto sm:bottom-6 sm:right-6 sm:w-[360px] sm:h-[500px]",
+          "inset-0 sm:inset-auto sm:bottom-6 sm:right-6 sm:w-[360px] sm:h-[min(500px,80dvh)]",
           "bg-gray-900/95 backdrop-blur-xl sm:rounded-2xl border border-gray-800 shadow-2xl shadow-black/50",
           "animate-fade-in"
         )}>

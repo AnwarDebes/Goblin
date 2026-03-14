@@ -501,15 +501,84 @@
   animation-play-state: paused;
 }
 
+/* ── Hide scrollbar utility ─────────────────────────────────────────── */
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── Mobile-safe viewport height ───────────────────────────────────── */
+
+/* Fallback for browsers that don't support dvh */
+@supports not (height: 100dvh) {
+  .h-dvh, [class*="h-[100dvh]"] {
+    height: 100vh;
+  }
+}
+
 /* ── Mobile touch improvements ────────────────────────────────────── */
 
 @media (max-width: 640px) {
   .card {
-    @apply p-3;
+    @apply p-3 rounded-lg;
+  }
+
+  .card-hover:hover {
+    transform: none;
   }
 
   .section-title {
     @apply text-base;
+  }
+
+  .btn-goblin {
+    @apply px-4 py-2 text-sm;
+  }
+
+  .btn-metamask {
+    @apply px-4 py-2 text-sm;
+  }
+
+  /* Prevent iOS double-tap zoom on buttons */
+  button, a, [role="button"] {
+    touch-action: manipulation;
+  }
+
+  /* Better touch targets — minimum 44px on mobile */
+  .badge {
+    @apply px-2 py-1;
+  }
+
+  /* Fix hover glow on touch — don't lift cards */
+  .hover-glow:hover {
+    transform: none;
+  }
+
+  /* Reduce glow effects on mobile for performance */
+  .glow-green {
+    box-shadow: 0 0 8px rgba(34,197,94,0.2);
+  }
+
+  .glow-gold {
+    box-shadow: 0 0 8px rgba(245,158,11,0.2);
+  }
+}
+
+/* ── iPhone-specific fixes (safe area for notch/island) ────────────── */
+
+@supports (padding-top: env(safe-area-inset-top)) {
+  .fixed.bottom-4, .fixed.bottom-6 {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
 }
 
@@ -520,5 +589,29 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Touch device optimizations ────────────────────────────────────── */
+
+@media (hover: none) and (pointer: coarse) {
+  /* Disable hover effects on touch devices */
+  .card-hover:hover {
+    transform: none;
+    box-shadow: none;
+  }
+
+  .hover-glow:hover {
+    transform: none;
+  }
+
+  /* Larger touch targets */
+  button, a, [role="button"] {
+    min-height: 36px;
+  }
+
+  /* Disable particle/cursor effects that waste battery */
+  .particles-bg::before {
+    animation: none;
   }
 }

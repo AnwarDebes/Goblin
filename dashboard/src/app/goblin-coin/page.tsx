@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Wallet,
   ExternalLink,
@@ -73,6 +73,19 @@ function StepCard({
   );
 }
 
+function ResponsiveCoin() {
+  const [coinSize, setCoinSize] = useState(240);
+
+  useEffect(() => {
+    const update = () => setCoinSize(window.innerWidth < 640 ? 150 : 240);
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  return <GoblinCoin3D size={coinSize} />;
+}
+
 export default function GoblinCoinPage() {
   const [copied, setCopied] = useState(false);
   const contractAddress = "0x...your-contract-address";
@@ -97,10 +110,10 @@ export default function GoblinCoinPage() {
             <h1 className="text-2xl sm:text-4xl font-bold text-white mb-2">
               <span className="text-goblin-gradient">GBLN</span> Token
             </h1>
-            <p className="text-lg text-gray-400 mb-4">
+            <p className="text-sm sm:text-lg text-gray-400 mb-4">
               The official token of Goblin AI Trading Platform
             </p>
-            <p className="text-sm text-gray-500 max-w-md">
+            <p className="text-xs sm:text-sm text-gray-500 max-w-md">
               GBLN powers the Goblin ecosystem — staking rewards, premium features,
               and governance for the AI trading community.
             </p>
@@ -134,11 +147,11 @@ export default function GoblinCoinPage() {
             </div>
           </div>
 
-          {/* 3D Coin */}
-          <div className="mt-8 lg:mt-0">
+          {/* 3D Coin — single responsive instance */}
+          <div className="mt-6 lg:mt-0">
             <div className="relative">
               <div className="absolute inset-0 bg-goblin-500/10 blur-3xl rounded-full" />
-              <GoblinCoin3D size={240} />
+              <ResponsiveCoin />
             </div>
           </div>
         </div>

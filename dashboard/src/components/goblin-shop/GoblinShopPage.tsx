@@ -94,30 +94,30 @@ export default function GoblinShopPage() {
       />
 
       {/* Player Profile Bar */}
-      <div className="bg-gray-900/80 backdrop-blur border-y border-goblin-500/20 px-4 py-3">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center gap-4">
+      <div className="bg-gray-900/80 backdrop-blur border-y border-goblin-500/20 px-2 sm:px-4 py-2 sm:py-3">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center gap-2 sm:gap-4">
           {/* Left: Avatar + Name */}
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-goblin-500/20 border border-goblin-500/30 flex items-center justify-center text-lg">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-goblin-500/20 border border-goblin-500/30 flex items-center justify-center text-sm sm:text-lg shrink-0">
               🧌
             </div>
             <div>
-              <div className="text-sm font-bold text-white">{data.playerProfile.goblinsName}</div>
-              <div className="text-[10px] text-gray-500">{data.playerProfile.title}</div>
+              <div className="text-xs sm:text-sm font-bold text-white">{data.playerProfile.goblinsName}</div>
+              <div className="text-[9px] sm:text-[10px] text-gray-500">{data.playerProfile.title}</div>
             </div>
           </div>
 
           {/* Center: Level + XP Bar */}
-          <div className="flex items-center gap-3 flex-1 min-w-[200px]">
-            <div className="w-8 h-8 rounded-full bg-goblin-500/20 border border-goblin-500/30 flex items-center justify-center text-xs font-bold text-goblin-400">
+          <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-[140px] sm:min-w-[200px]">
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-goblin-500/20 border border-goblin-500/30 flex items-center justify-center text-[10px] sm:text-xs font-bold text-goblin-400 shrink-0">
               {data.playerProfile.level}
             </div>
             <div className="flex-1 max-w-[200px]">
-              <div className="flex justify-between text-[10px] text-gray-500 mb-0.5">
+              <div className="flex justify-between text-[9px] sm:text-[10px] text-gray-500 mb-0.5">
                 <span>Lv.{data.playerProfile.level}</span>
                 <span>{data.playerProfile.xp} / {data.playerProfile.xp + data.playerProfile.xpToNextLevel} XP</span>
               </div>
-              <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+              <div className="h-1.5 sm:h-2 bg-gray-800 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-gradient-to-r from-goblin-600 to-goblin-400 rounded-full transition-all duration-1000"
                   style={{
@@ -129,9 +129,9 @@ export default function GoblinShopPage() {
           </div>
 
           {/* Right: GBLN Balance + Tier */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4">
             <CoinCounter amount={effectiveBalance} size="md" />
-            <span className={cn("text-xs font-bold px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700", tierStyle.color)}>
+            <span className={cn("text-[10px] sm:text-xs font-bold px-1.5 sm:px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700 whitespace-nowrap", tierStyle.color)}>
               {tierStyle.label}
             </span>
           </div>

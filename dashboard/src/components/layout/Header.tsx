@@ -88,21 +88,22 @@ export default function Header() {
 
   return (
     <>
-      <header className="relative flex h-14 sm:h-16 items-center justify-between border-b border-gray-800/50 bg-gray-950/95 backdrop-blur-sm px-3 sm:px-6 overflow-hidden">
+      <header className="relative flex h-12 sm:h-16 items-center justify-between border-b border-gray-800/50 bg-gray-950/95 backdrop-blur-sm px-2 sm:px-6 overflow-hidden">
         {/* Subtle bottom accent line */}
         <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-goblin-500/20 to-transparent" />
 
-        {/* CRT scanning line */}
-        <div className="header-scan-line" />
+        {/* CRT scanning line — hidden on mobile for performance */}
+        <div className="header-scan-line hidden sm:block" />
 
         {/* Current page name */}
         <div className="hidden lg:flex items-center gap-2">
           <span className="text-sm font-semibold text-white">{pageName}</span>
         </div>
 
-        <div className="lg:hidden w-10" />
+        {/* Spacer for mobile sidebar toggle button */}
+        <div className="lg:hidden w-10 shrink-0" />
 
-        <div className="flex items-center gap-2 sm:gap-3 ml-auto">
+        <div className="flex items-center gap-1.5 sm:gap-3 ml-auto">
           {/* Search / Command Palette trigger */}
           <button
             onClick={openCommandPalette}
@@ -121,17 +122,17 @@ export default function Header() {
 
           <div className="h-4 w-px bg-gray-800 hidden xl:block" />
 
-          {/* Sound toggle */}
+          {/* Sound toggle — hidden on small mobile */}
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
-            className="text-gray-400 hover:text-white transition-colors"
+            className="hidden sm:block text-gray-400 hover:text-white transition-colors"
             title={soundEnabled ? "Mute sounds" : "Enable sounds"}
           >
             {soundEnabled ? <Volume2 size={16} className="text-goblin-500" /> : <VolumeX size={16} />}
           </button>
 
-          {/* Smart Alerts */}
-          <div className="relative">
+          {/* Smart Alerts — hidden on small mobile */}
+          <div className="relative hidden sm:block">
             <AlertManager />
           </div>
 
@@ -154,7 +155,7 @@ export default function Header() {
 
             {/* Notification dropdown */}
             {showNotifications && (
-              <div className="absolute right-0 top-full mt-2 w-80 max-h-96 overflow-y-auto rounded-xl border border-gray-700 bg-gray-900/95 backdrop-blur-xl shadow-2xl z-[200]">
+              <div className="absolute right-0 top-full mt-2 w-[calc(100vw-2rem)] sm:w-80 max-w-80 max-h-[70vh] sm:max-h-96 overflow-y-auto rounded-xl border border-gray-700 bg-gray-900/95 backdrop-blur-xl shadow-2xl z-[200]">
                 <div className="flex items-center justify-between border-b border-gray-800 px-4 py-2.5">
                   <span className="text-xs font-semibold text-white">Notifications</span>
                   <div className="flex gap-2">

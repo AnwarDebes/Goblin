@@ -8,7 +8,7 @@ import DecisionStrip from "@/components/war-room/DecisionStrip";
 
 export default function WarRoomPage() {
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] gap-2">
+    <div className="flex flex-col min-h-0 lg:h-[calc(100dvh-4rem)] gap-2">
       {/* Header */}
       <div className="flex items-center justify-between shrink-0">
         <div>

@@ -41,12 +41,12 @@ export default function RootLayout({
           <GoblinChat />
           <FamiliarOverlay />
           <GoblinBackground />
-          <div className="relative z-10 flex h-screen overflow-hidden">
+          <div className="relative z-10 flex h-[100dvh] overflow-hidden">
             <Sidebar />
             <div className="flex min-w-0 flex-1 flex-col lg:ml-64">
               <Header />
               <SafeguardsStrip />
-              <main className="flex-1 overflow-x-hidden overflow-y-auto p-3 sm:p-4 lg:p-6">
+              <main className="flex-1 overflow-x-hidden overflow-y-auto p-2 sm:p-4 lg:p-6">
                 <div className="animate-fade-in">{children}</div>
               </main>
             </div>

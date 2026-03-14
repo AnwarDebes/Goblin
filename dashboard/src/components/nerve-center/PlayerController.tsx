@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useCallback } from "react";
+import { useRef, useEffect, useCallback, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { Html } from "@react-three/drei";
 import * as THREE from "three";
@@ -12,6 +12,7 @@ import type { ZoneId } from "./zones/ZoneConfig";
 const MOVE_SPEED = 12;
 const SPRINT_SPEED = 20;
 const MOUSE_SENSITIVITY = 0.003;
+const TOUCH_SENSITIVITY = 0.005;
 const CAM_DISTANCE = 10;
 const CAM_HEIGHT = 5;
 const CAM_MIN_V = 0.05;
@@ -20,6 +21,7 @@ const PLAYER_Y = 0; // ground level
 const AUTO_WALK_SPEED = 14;
 const AUTO_WALK_STOP_DIST = 2;
 const WORLD_BOUND = 45; // keep player within this radius
+const JOYSTICK_DEAD_ZONE = 0.15;
 
 /* ── Pre-allocated vectors ─────────────────────────────────────────── */
 const _forward = new THREE.Vector3();
@@ -32,6 +34,9 @@ const _autoDir = new THREE.Vector3();
 
 /* ── Input tracking ────────────────────────────────────────────────── */
 const keys: Record<string, boolean> = {};
+
+/* ── Touch input tracking ──────────────────────────────────────────── */
+const touchInput = { moveX: 0, moveY: 0, lookDX: 0, lookDY: 0 };
 
 /* ── Skin palette ──────────────────────────────────────────────────── */
 const SKIN = "#6dd676";
@@ -213,6 +218,141 @@ function KingGoblin() {
   );
 }
 
+/* ── Virtual Joystick (mobile controls) ────────────────────────────── */
+function VirtualJoystick() {
+  const knobRef = useRef<HTMLDivElement>(null);
+  const baseRef = useRef<HTMLDivElement>(null);
+  const activeTouch = useRef<number | null>(null);
+  const baseRect = useRef<{ cx: number; cy: number; r: number }>({ cx: 0, cy: 0, r: 0 });
+
+  const handleStart = useCallback((e: React.TouchEvent) => {
+    if (activeTouch.current !== null) return;
+    const touch = e.changedTouches[0];
+    activeTouch.current = touch.identifier;
+    const base = baseRef.current;
+    if (base) {
+      const rect = base.getBoundingClientRect();
+      baseRect.current = { cx: rect.left + rect.width / 2, cy: rect.top + rect.height / 2, r: rect.width / 2 };
+    }
+    useNerveCenterStore.setState({ isPlaying: true });
+  }, []);
+
+  const handleMove = useCallback((e: React.TouchEvent) => {
+    e.preventDefault();
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+      if (touch.identifier !== activeTouch.current) continue;
+      const { cx, cy, r } = baseRect.current;
+      let dx = (touch.clientX - cx) / r;
+      let dy = (touch.clientY - cy) / r;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len > 1) { dx /= len; dy /= len; }
+      if (len < JOYSTICK_DEAD_ZONE) { dx = 0; dy = 0; }
+      touchInput.moveX = dx;
+      touchInput.moveY = dy;
+      if (knobRef.current) {
+        knobRef.current.style.transform = `translate(${dx * r * 0.7}px, ${dy * r * 0.7}px)`;
+      }
+    }
+  }, []);
+
+  const handleEnd = useCallback((e: React.TouchEvent) => {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === activeTouch.current) {
+        activeTouch.current = null;
+        touchInput.moveX = 0;
+        touchInput.moveY = 0;
+        if (knobRef.current) knobRef.current.style.transform = "translate(0px, 0px)";
+      }
+    }
+  }, []);
+
+  return (
+    <div
+      ref={baseRef}
+      onTouchStart={handleStart}
+      onTouchMove={handleMove}
+      onTouchEnd={handleEnd}
+      onTouchCancel={handleEnd}
+      className="absolute bottom-6 left-6 w-28 h-28 sm:w-32 sm:h-32 rounded-full border-2 border-amber-500/30 bg-gray-950/40 backdrop-blur-sm flex items-center justify-center pointer-events-auto touch-none z-20"
+    >
+      <div
+        ref={knobRef}
+        className="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-amber-500/50 border-2 border-amber-400/60 shadow-lg shadow-amber-500/20"
+      />
+    </div>
+  );
+}
+
+/* ── Touch Look Area (right side of screen for camera) ─────────────── */
+function TouchLookArea() {
+  const lastTouch = useRef<{ x: number; y: number } | null>(null);
+  const activeId = useRef<number | null>(null);
+
+  const handleStart = useCallback((e: React.TouchEvent) => {
+    if (activeId.current !== null) return;
+    const touch = e.changedTouches[0];
+    activeId.current = touch.identifier;
+    lastTouch.current = { x: touch.clientX, y: touch.clientY };
+    useNerveCenterStore.setState({ isPlaying: true });
+  }, []);
+
+  const handleMove = useCallback((e: React.TouchEvent) => {
+    e.preventDefault();
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+      if (touch.identifier !== activeId.current || !lastTouch.current) continue;
+      const dx = touch.clientX - lastTouch.current.x;
+      const dy = touch.clientY - lastTouch.current.y;
+      lastTouch.current = { x: touch.clientX, y: touch.clientY };
+      const state = useNerveCenterStore.getState();
+      const newH = state.cameraAngleH + dx * TOUCH_SENSITIVITY;
+      const newV = Math.max(CAM_MIN_V, Math.min(CAM_MAX_V, state.cameraAngleV + dy * TOUCH_SENSITIVITY));
+      useNerveCenterStore.setState({ cameraAngleH: newH, cameraAngleV: newV });
+    }
+  }, []);
+
+  const handleEnd = useCallback((e: React.TouchEvent) => {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === activeId.current) {
+        activeId.current = null;
+        lastTouch.current = null;
+      }
+    }
+  }, []);
+
+  return (
+    <div
+      onTouchStart={handleStart}
+      onTouchMove={handleMove}
+      onTouchEnd={handleEnd}
+      onTouchCancel={handleEnd}
+      className="absolute top-0 right-0 w-1/2 h-full pointer-events-auto touch-none z-10"
+    />
+  );
+}
+
+/* ── Mobile Touch Controls Overlay (rendered outside Canvas) ───────── */
+export function MobileTouchControls() {
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const check = () => setIsMobile("ontouchstart" in window && window.innerWidth < 1024);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
+
+  if (!isMobile) return null;
+
+  return (
+    <div className="absolute inset-0 pointer-events-none z-20">
+      <TouchLookArea />
+      <VirtualJoystick />
+    </div>
+  );
+}
+
 /* ── Main PlayerController ─────────────────────────────────────────── */
 export default function PlayerController() {
   const { gl, camera } = useThree();
@@ -247,8 +387,10 @@ export default function PlayerController() {
     };
   }, []);
 
-  // Pointer lock for mouse look
+  // Pointer lock for mouse look (desktop only)
   const requestPointerLock = useCallback(() => {
+    // Skip pointer lock on touch devices
+    if ("ontouchstart" in window && window.innerWidth < 1024) return;
     gl.domElement.requestPointerLock();
   }, [gl]);
 
@@ -319,7 +461,7 @@ export default function PlayerController() {
       }
     }
 
-    // WASD / Arrow key movement (overrides auto-walk)
+    // WASD / Arrow key / Touch joystick movement (overrides auto-walk)
     const isSprinting = keys["shift"];
     const speed = (isSprinting ? SPRINT_SPEED : MOVE_SPEED) * delta;
     _move.set(0, 0, 0);
@@ -328,6 +470,12 @@ export default function PlayerController() {
     if (keys["s"] || keys["arrowdown"]) _move.sub(_forward);
     if (keys["a"] || keys["arrowleft"]) _move.sub(_right);
     if (keys["d"] || keys["arrowright"]) _move.add(_right);
+
+    // Touch joystick input (Y is inverted: up = negative = forward)
+    if (Math.abs(touchInput.moveX) > JOYSTICK_DEAD_ZONE || Math.abs(touchInput.moveY) > JOYSTICK_DEAD_ZONE) {
+      _move.addScaledVector(_forward, -touchInput.moveY);
+      _move.addScaledVector(_right, touchInput.moveX);
+    }
 
     if (_move.lengthSq() > 0) {
       // Cancel auto-walk when player manually moves

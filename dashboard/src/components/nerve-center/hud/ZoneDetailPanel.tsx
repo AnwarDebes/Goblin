@@ -20,7 +20,7 @@ export default function ZoneDetailPanel() {
   if (!zoneDef) return null;
 
   return (
-    <div className="absolute top-16 right-48 w-72 pointer-events-auto max-h-[70vh] overflow-y-auto">
+    <div className="absolute top-14 sm:top-16 right-2 sm:right-48 w-[calc(100vw-1rem)] sm:w-72 max-w-[280px] pointer-events-auto max-h-[50vh] sm:max-h-[70vh] overflow-y-auto">
       <div className="bg-gray-950/90 backdrop-blur-md border rounded-xl overflow-hidden shadow-2xl" style={{ borderColor: `${zoneDef.glowColor}40` }}>
         {/* Zone header */}
         <div className="px-3 py-2 bg-gradient-to-r from-gray-900/50 to-transparent border-b" style={{ borderColor: `${zoneDef.glowColor}20` }}>

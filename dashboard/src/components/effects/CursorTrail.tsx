@@ -6,6 +6,9 @@ export default function CursorTrail() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
+    // Disable on touch/mobile devices — no mouse cursor to trail
+    if ("ontouchstart" in window && window.innerWidth < 1024) return;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");

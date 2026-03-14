@@ -64,7 +64,7 @@ export default function EmergencyPanel({ onClose }: EmergencyPanelProps) {
   };
 
   return (
-    <div className="absolute top-full right-0 mt-2 w-72 rounded-xl border border-gray-700 bg-gray-900/95 backdrop-blur-xl shadow-2xl z-50 overflow-hidden"
+    <div className="absolute top-full right-0 mt-2 w-[calc(100vw-2rem)] sm:w-72 max-w-72 rounded-xl border border-gray-700 bg-gray-900/95 backdrop-blur-xl shadow-2xl z-50 overflow-hidden"
       onClick={(e) => e.stopPropagation()}>
       <div className="p-4 space-y-4">
         <div className="flex items-center gap-2">

@@ -58,7 +58,7 @@ export default function DistrictNav() {
   return (
     <div className="border-b border-gray-800">
       {/* Category pills */}
-      <div className="flex items-center gap-2 px-4 pt-2">
+      <div className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-4 pt-2 overflow-x-auto no-scrollbar">
         <button
           onClick={() => setActiveCategory("marketplace")}
           className={cn(
@@ -95,7 +95,7 @@ export default function DistrictNav() {
       </div>
 
       {/* District tabs */}
-      <div className="w-full overflow-x-auto scrollbar-hide">
+      <div className="w-full overflow-x-auto no-scrollbar">
         <div className="flex min-w-max">
           {districts.map((d) => {
             const isActive = activeDistrict === d.id;

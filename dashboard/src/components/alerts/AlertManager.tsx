@@ -89,7 +89,7 @@ export default function AlertManager() {
 
       {/* Alert panel */}
       {isOpen && (
-        <div className="absolute right-0 top-full mt-2 w-80 bg-gray-900/95 backdrop-blur-xl border border-gray-800 rounded-xl shadow-2xl z-50 max-h-[500px] overflow-y-auto">
+        <div className="absolute right-0 top-full mt-2 w-[calc(100vw-2rem)] sm:w-80 max-w-80 bg-gray-900/95 backdrop-blur-xl border border-gray-800 rounded-xl shadow-2xl z-50 max-h-[70vh] sm:max-h-[500px] overflow-y-auto">
           <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <h3 className="text-sm font-bold text-white">Smart Alerts</h3>
             <button

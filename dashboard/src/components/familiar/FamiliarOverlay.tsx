@@ -35,11 +35,11 @@ export default function FamiliarOverlay() {
     <>
       <FamiliarEvolutionAnimation />
 
-      {/* Floating familiar bubble */}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2">
+      {/* Floating familiar bubble — offset on mobile to avoid GoblinChat button */}
+      <div className="fixed bottom-20 sm:bottom-4 right-4 z-50 flex flex-col items-end gap-2">
         {/* Expanded panel */}
         {isExpanded && (
-          <div className="w-72 sm:w-80 bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-xl shadow-2xl animate-slide-up overflow-hidden">
+          <div className="w-[calc(100vw-2rem)] sm:w-80 max-w-80 bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-xl shadow-2xl animate-slide-up overflow-hidden max-h-[60vh] sm:max-h-none overflow-y-auto">
             {/* Header */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800/50">
               <div className="flex items-center gap-2">
@@ -111,7 +111,7 @@ export default function FamiliarOverlay() {
         <button
           onClick={toggleExpanded}
           className={cn(
-            "relative w-14 h-14 rounded-full border-2 transition-all duration-300 group",
+            "relative w-11 h-11 sm:w-14 sm:h-14 rounded-full border-2 transition-all duration-300 group",
             "bg-gray-900/90 backdrop-blur-xl shadow-lg hover:shadow-xl hover:scale-110",
             isEvolving
               ? "border-gold-400 shadow-gold-500/50"

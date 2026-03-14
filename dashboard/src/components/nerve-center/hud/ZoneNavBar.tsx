@@ -14,8 +14,8 @@ export default function ZoneNavBar() {
   const setActiveZone = useNerveCenterStore((s) => s.setActiveZone);
 
   return (
-    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-auto">
-      <div className="flex gap-1 bg-gray-950/90 backdrop-blur-md border border-amber-700/30 rounded-xl px-2 py-1.5 shadow-2xl">
+    <div className="absolute bottom-2 sm:bottom-4 left-1/2 -translate-x-1/2 pointer-events-auto max-w-[95vw] lg:max-w-none">
+      <div className="flex gap-0.5 sm:gap-1 bg-gray-950/90 backdrop-blur-md border border-amber-700/30 rounded-xl px-1.5 sm:px-2 py-1 sm:py-1.5 shadow-2xl overflow-x-auto no-scrollbar">
         {allZones.map((zone) => {
           const isNear = nearestZone === zone.id;
           const isActive = activeZone === zone.id;
@@ -23,7 +23,7 @@ export default function ZoneNavBar() {
             <button
               key={zone.id}
               onClick={() => setActiveZone(zone.id)}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+              className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 rounded-lg text-[10px] sm:text-xs font-bold transition-all shrink-0 ${
                 isNear
                   ? "bg-amber-600/30 text-amber-200 border border-amber-400/50 shadow-lg shadow-amber-500/10"
                   : isActive
@@ -31,7 +31,7 @@ export default function ZoneNavBar() {
                     : "text-gray-400 hover:text-white hover:bg-gray-800/50 border border-transparent"
               }`}
             >
-              <span className="text-sm">{zone.icon}</span>
+              <span className="text-xs sm:text-sm">{zone.icon}</span>
               <span className="hidden sm:inline">{zone.name}</span>
               {isNear && <span className="text-[8px] text-amber-400 hidden sm:inline">(here)</span>}
               <kbd className="hidden md:inline text-[8px] text-gray-600 bg-gray-800 rounded px-1 py-0.5 ml-0.5">{zone.keyboard}</kbd>

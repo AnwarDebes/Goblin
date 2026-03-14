@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { AlertCircle, Check, Save, Upload } from "lucide-react";
+import { AlertCircle, Check, Save, Upload, Plus, X } from "lucide-react";
 import StrategyCanvas from "@/components/strategy/StrategyCanvas";
 import NodePalette from "@/components/strategy/NodePalette";
 import NodeConfig from "@/components/strategy/NodeConfig";
@@ -16,6 +16,7 @@ export default function StrategyPage() {
   const [connections, setConnections] = useState<StrategyConnection[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(true);
+  const [mobilePaletteOpen, setMobilePaletteOpen] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [validated, setValidated] = useState(false);
 
@@ -138,25 +139,25 @@ export default function StrategyPage() {
   }, []);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] gap-2">
+    <div className="flex flex-col h-[calc(100dvh-4rem)] gap-2">
       {/* Header */}
-      <div className="flex items-center justify-between shrink-0">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-white">Strategy Builder</h1>
-          <p className="text-xs text-gray-500">Visual node editor for trading strategies</p>
+      <div className="flex items-center justify-between shrink-0 gap-2">
+        <div className="min-w-0">
+          <h1 className="text-lg sm:text-2xl font-bold text-white truncate">Strategy Builder</h1>
+          <p className="text-[10px] sm:text-xs text-gray-500 hidden sm:block">Visual node editor for trading strategies</p>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={handleValidate} className="btn-goblin px-3 py-1.5 text-xs flex items-center gap-1.5">
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+          <button onClick={handleValidate} className="btn-goblin px-2 sm:px-3 py-1.5 text-[10px] sm:text-xs flex items-center gap-1">
             <Check size={14} />
-            Validate
+            <span className="hidden sm:inline">Validate</span>
           </button>
-          <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-gray-800 text-gray-300 border border-gray-700 hover:text-white flex items-center gap-1.5">
+          <button onClick={handleSave} className="px-2 sm:px-3 py-1.5 text-[10px] sm:text-xs rounded-lg bg-gray-800 text-gray-300 border border-gray-700 hover:text-white flex items-center gap-1">
             <Save size={14} />
-            Save
+            <span className="hidden sm:inline">Save</span>
           </button>
-          <button onClick={handleLoad} className="px-3 py-1.5 text-xs rounded-lg bg-gray-800 text-gray-300 border border-gray-700 hover:text-white flex items-center gap-1.5">
+          <button onClick={handleLoad} className="px-2 sm:px-3 py-1.5 text-[10px] sm:text-xs rounded-lg bg-gray-800 text-gray-300 border border-gray-700 hover:text-white flex items-center gap-1">
             <Upload size={14} />
-            Load
+            <span className="hidden sm:inline">Load</span>
           </button>
         </div>
       </div>
@@ -178,13 +179,13 @@ export default function StrategyPage() {
 
       {/* Main layout: palette | canvas | config */}
       <div className="flex-1 min-h-0 flex gap-2">
-        {/* Left: Palette */}
+        {/* Left: Palette — hidden on mobile, collapsible on desktop */}
         <div className={cn(
-          "shrink-0 overflow-y-auto transition-all",
-          paletteOpen ? "w-48" : "w-0"
+          "shrink-0 overflow-y-auto transition-all hidden sm:block",
+          paletteOpen ? "w-40 lg:w-48" : "w-0"
         )}>
           {paletteOpen && (
-            <div className="card h-full overflow-y-auto p-3 space-y-4">
+            <div className="card h-full overflow-y-auto p-2 sm:p-3 space-y-3 sm:space-y-4">
               <NodePalette onAddNode={handleAddNode} />
               <div className="border-t border-gray-800 pt-3">
                 <StrategyTemplates onLoad={handleLoadTemplate} />
@@ -193,10 +194,10 @@ export default function StrategyPage() {
           )}
         </div>
 
-        {/* Toggle button */}
+        {/* Toggle button — hidden on mobile */}
         <button
           onClick={() => setPaletteOpen(!paletteOpen)}
-          className="shrink-0 self-start mt-2 px-1 py-4 rounded bg-gray-800 text-gray-400 hover:text-white border border-gray-700 text-[10px]"
+          className="shrink-0 self-start mt-2 px-1 py-4 rounded bg-gray-800 text-gray-400 hover:text-white border border-gray-700 text-[10px] hidden sm:block"
         >
           {paletteOpen ? "◄" : "►"}
         </button>
@@ -211,9 +212,9 @@ export default function StrategyPage() {
           selectedNodeId={selectedNodeId}
         />
 
-        {/* Right: Node config */}
+        {/* Right: Node config — responsive width */}
         {selectedNode && (
-          <div className="shrink-0 w-52 card overflow-y-auto p-3">
+          <div className="shrink-0 w-44 sm:w-52 card overflow-y-auto p-2 sm:p-3">
             <NodeConfig
               node={selectedNode}
               onUpdate={handleUpdateNode}
@@ -223,9 +224,51 @@ export default function StrategyPage() {
         )}
       </div>
 
-      <p className="text-[10px] text-gray-600 shrink-0">
+      <p className="text-[10px] text-gray-600 shrink-0 hidden sm:block">
         Drag nodes from palette. Connect output ports (green) to input ports (gray). Pan with background drag, zoom with scroll.
       </p>
+
+      {/* Mobile FAB — add nodes (left side to avoid GoblinChat & Familiar on right) */}
+      <button
+        onClick={() => setMobilePaletteOpen(true)}
+        className="sm:hidden fixed bottom-4 left-4 z-40 h-12 w-12 rounded-full bg-goblin-500 text-white shadow-lg flex items-center justify-center active:scale-95 transition-transform"
+        style={{ boxShadow: "0 4px 20px rgba(34,197,94,0.4)" }}
+      >
+        <Plus size={24} />
+      </button>
+
+      {/* Mobile bottom sheet */}
+      {mobilePaletteOpen && (
+        <div className="sm:hidden fixed inset-0 z-50 flex flex-col justify-end" onClick={() => setMobilePaletteOpen(false)}>
+          {/* Backdrop */}
+          <div className="absolute inset-0 bg-black/60" />
+
+          {/* Sheet */}
+          <div
+            className="relative bg-gray-900 border-t border-gray-700 rounded-t-2xl max-h-[70dvh] overflow-y-auto animate-slide-up"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Handle + header */}
+            <div className="sticky top-0 bg-gray-900 z-10 px-4 pt-3 pb-2 border-b border-gray-800">
+              <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-gray-700" />
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-bold text-white">Add Nodes</h3>
+                <button onClick={() => setMobilePaletteOpen(false)} className="text-gray-500 hover:text-white p-1">
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Palette + templates */}
+            <div className="p-4 space-y-4">
+              <NodePalette onAddNode={(partial) => { handleAddNode(partial); setMobilePaletteOpen(false); }} />
+              <div className="border-t border-gray-800 pt-4">
+                <StrategyTemplates onLoad={(n, c) => { handleLoadTemplate(n, c); setMobilePaletteOpen(false); }} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
