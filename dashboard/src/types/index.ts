@@ -414,3 +414,43 @@ export interface BenchmarkData {
   eth: number[];
   data_points: number;
 }
+
+/* ── Phase 6: AI Activity Logs ─────────────────────────────────── */
+
+export type AILogCategory =
+  | "prediction" | "signal" | "trade" | "sentiment"
+  | "risk" | "model" | "market" | "portfolio"
+  | "whale" | "system" | "chat" | "strategy";
+
+export type AILogLevel = "debug" | "info" | "warning" | "error" | "critical";
+
+export interface AILogEntry {
+  id: string;
+  timestamp: string;
+  category: AILogCategory;
+  level: AILogLevel;
+  service: string;
+  message: string;
+  symbol?: string;
+  confidence?: number;
+  decision_impact?: string;
+  chain_id?: string;
+  details: Record<string, unknown>;
+}
+
+export interface AIStats {
+  total_events_today: number;
+  events_by_category: Record<string, number>;
+  events_by_level: Record<string, number>;
+  top_symbols: Array<{ symbol: string; count: number }>;
+  avg_confidence_by_category: Record<string, number>;
+}
+
+export interface AIDecisionChain {
+  chain_id: string;
+  events: AILogEntry[];
+  outcome?: "profitable" | "loss" | "pending" | "rejected";
+  started_at: string;
+  completed_at?: string;
+  symbol: string;
+}

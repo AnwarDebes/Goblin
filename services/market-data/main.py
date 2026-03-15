@@ -27,7 +27,7 @@ TRADING_PAIRS_LIMIT = int(TRADING_PAIRS_LIMIT_STR) if TRADING_PAIRS_LIMIT_STR an
 TRADING_PAIRS = os.getenv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT").split(",")
 
 # TimescaleDB config
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "timescaledb")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", 5432))
 POSTGRES_DB = os.getenv("POSTGRES_DB", "goblin")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "goblin")

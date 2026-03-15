@@ -21,7 +21,7 @@ from prometheus_client import Counter, Histogram, Gauge, generate_latest
 # Configuration
 MEXC_API_KEY = os.getenv("MEXC_API_KEY", "")
 MEXC_SECRET_KEY = os.getenv("MEXC_SECRET_KEY", "")
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 PAPER_MODE = os.getenv("PAPER_MODE", "false").lower() == "true"

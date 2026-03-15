@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from prometheus_client import Gauge, generate_latest
 
 # Configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", 0.002))  # 0.2% profit target

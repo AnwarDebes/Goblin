@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from prometheus_client import Counter, Gauge, generate_latest
 
 # Configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 0.3))  # 30% confidence threshold - AGGRESSIVE for testing
@@ -127,7 +127,7 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
         available = None
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get("http://executor:8005/balance")
+                response = await client.get("http://localhost:8005/balance")
                 if response.status_code == 200:
                     data = response.json()
                     balances = data.get("balances", {})
@@ -238,7 +238,7 @@ async def sync_balance_from_mexc():
     """Fetch real balance from executor service and update Redis portfolio_state"""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get("http://executor:8005/balance")
+            response = await client.get("http://localhost:8005/balance")
             if response.status_code == 200:
                 data = response.json()
                 balances = data.get("balances", {})

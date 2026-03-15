@@ -27,6 +27,9 @@ import type {
   CorrelationData,
   MultiTimeframeData,
   BenchmarkData,
+  AILogEntry,
+  AIStats,
+  AIDecisionChain,
 } from "@/types";
 
 export const API_BASE =
@@ -915,4 +918,55 @@ export async function getMultiTimeframe(symbol: string = "BTCUSDT"): Promise<Mul
 
 export async function getBenchmark(days: number = 90): Promise<BenchmarkData> {
   return requestJson<BenchmarkData>(`/api/v2/analytics/benchmark?days=${days}`);
+}
+
+/* ── Phase 6: AI Activity Logs ─────────────────────────────────── */
+
+export async function getAILogs(params: {
+  category?: string;
+  level?: string;
+  symbol?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<AILogEntry[]> {
+  try {
+    const searchParams = new URLSearchParams();
+    if (params.category) searchParams.set("category", params.category);
+    if (params.level) searchParams.set("level", params.level);
+    if (params.symbol) searchParams.set("symbol", params.symbol);
+    searchParams.set("limit", String(params.limit || 100));
+    searchParams.set("offset", String(params.offset || 0));
+    const data = await requestJson<unknown[]>(`/api/v2/ai/logs?${searchParams}`);
+    if (!Array.isArray(data)) return [];
+    return data as AILogEntry[];
+  } catch (err) {
+    console.error("[api] getAILogs failed:", err);
+    return [];
+  }
+}
+
+export async function getAIStats(): Promise<AIStats> {
+  try {
+    return await requestJson<AIStats>("/api/v2/ai/stats");
+  } catch (err) {
+    console.error("[api] getAIStats failed:", err);
+    return {
+      total_events_today: 0,
+      events_by_category: {},
+      events_by_level: {},
+      top_symbols: [],
+      avg_confidence_by_category: {},
+    };
+  }
+}
+
+export async function getAITimeline(): Promise<AIDecisionChain[]> {
+  try {
+    const data = await requestJson<unknown[]>("/api/v2/ai/timeline");
+    if (!Array.isArray(data)) return [];
+    return data as AIDecisionChain[];
+  } catch (err) {
+    console.error("[api] getAITimeline failed:", err);
+    return [];
+  }
 }

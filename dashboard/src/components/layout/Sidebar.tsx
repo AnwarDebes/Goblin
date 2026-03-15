@@ -134,7 +134,7 @@ export default function Sidebar() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 space-y-1 px-3 py-4">
+        <nav className="flex-1 overflow-y-auto overscroll-contain space-y-1 px-3 py-4 scrollbar-thin">
           {navItems.map((item) => {
             const isActive =
               pathname === item.href ||
@@ -178,7 +178,7 @@ export default function Sidebar() {
         </nav>
 
         {/* Footer with Goblin Mascot */}
-        <div className="border-t border-gray-800/50 px-6 py-4">
+        <div className="border-t border-gray-800/50 px-6 py-3 shrink-0">
           <div className="flex items-center gap-3">
             {/* Animated mini goblin mascot */}
             <svg width="32" height="32" viewBox="0 0 256 256" className="shrink-0 goblin-mascot">

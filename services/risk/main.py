@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from prometheus_client import Counter, Gauge, generate_latest
 
 # Configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 STARTING_CAPITAL = float(os.getenv("STARTING_CAPITAL", 11.0))

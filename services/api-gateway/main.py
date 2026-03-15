@@ -5,6 +5,7 @@ Serves REST API for the Next.js dashboard and SSE for real-time updates.
 import asyncio
 import json
 import os
+import uuid
 from datetime import datetime
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -18,27 +19,27 @@ from fastapi.responses import StreamingResponse, PlainTextResponse
 from prometheus_client import Counter, generate_latest
 
 # Configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "timescaledb")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", 5432))
 POSTGRES_DB = os.getenv("POSTGRES_DB", "goblin")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "goblin")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
 
 SERVICES = {
-    "market_data": "http://market-data:8001",
-    "prediction": "http://prediction:8002",
-    "signal": "http://signal:8000",
-    "risk": "http://risk:8000",
-    "executor": "http://executor:8005",
-    "position": "http://position:8000",
-    "feature_store": "http://feature-store:8007",
-    "sentiment": "http://sentiment-analysis:8008",
-    "trend": "http://trend-analysis:8009",
-    "portfolio_optimizer": "http://portfolio-optimizer:8010",
-    "backtesting": "http://backtesting:8011",
+    "market_data": "http://localhost:8001",
+    "prediction": "http://localhost:8002",
+    "signal": "http://localhost:8003",
+    "risk": "http://localhost:8004",
+    "executor": "http://localhost:8005",
+    "position": "http://localhost:8006",
+    "feature_store": "http://localhost:8007",
+    "sentiment": "http://localhost:8008",
+    "trend": "http://localhost:8009",
+    "portfolio_optimizer": "http://localhost:8010",
+    "backtesting": "http://localhost:8011",
 }
 
 logger = structlog.get_logger()
@@ -67,6 +68,46 @@ async def init_db():
         logger.warning("TimescaleDB not available for analytics", error=str(e))
 
 
+async def periodic_ai_summary():
+    """Background task that logs a system summary every 5 minutes."""
+    while True:
+        try:
+            await asyncio.sleep(300)  # 5 minutes
+            # Gather basic system state
+            healthy_count = 0
+            total_count = len(SERVICES)
+            for name, url in SERVICES.items():
+                try:
+                    resp = await http_client.get(f"{url}/health", timeout=3.0)
+                    if resp.status_code == 200:
+                        healthy_count += 1
+                except Exception:
+                    pass
+
+            today = datetime.utcnow().strftime("%Y-%m-%d")
+            total_events = 0
+            try:
+                total_events = int(await redis_client.hget(f"ai:stats:{today}", "total") or 0)
+            except Exception:
+                pass
+
+            await log_ai_activity(
+                category=AILogCategory.SYSTEM,
+                action="periodic_summary",
+                level=AILogLevel.INFO,
+                details={
+                    "healthy_services": healthy_count,
+                    "total_services": total_count,
+                    "ai_events_today": total_events,
+                    "uptime_check": datetime.utcnow().isoformat(),
+                },
+            )
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("Periodic AI summary failed", error=str(e))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis_client, http_client
@@ -77,7 +118,31 @@ async def lifespan(app: FastAPI):
     )
     http_client = httpx.AsyncClient(timeout=30.0)
     await init_db()
+
+    # Log startup
+    await log_ai_activity(
+        category=AILogCategory.SYSTEM,
+        action="startup",
+        level=AILogLevel.INFO,
+        details={
+            "version": "2.0.0",
+            "services_configured": list(SERVICES.keys()),
+            "redis_host": REDIS_HOST,
+        },
+    )
+
+    # Start periodic summary background task
+    summary_task = asyncio.create_task(periodic_ai_summary())
+
     yield
+
+    # Cancel background task
+    summary_task.cancel()
+    try:
+        await summary_task
+    except asyncio.CancelledError:
+        pass
+
     if http_client:
         await http_client.aclose()
     if redis_client:
@@ -94,6 +159,95 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# =============================================
+# AI Activity Logging Infrastructure
+# =============================================
+
+class AILogCategory:
+    SIGNAL = "signal"
+    PREDICTION = "prediction"
+    TRADE = "trade"
+    RISK = "risk"
+    CHAT = "chat"
+    SYSTEM = "system"
+    SENTIMENT = "sentiment"
+    PORTFOLIO = "portfolio"
+
+
+class AILogLevel:
+    DEBUG = "debug"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+
+async def log_ai_activity(
+    category: str,
+    action: str,
+    level: str = AILogLevel.INFO,
+    symbol: str = "",
+    confidence: float = 0.0,
+    details: dict = None,
+    chain_id: str = "",
+):
+    """
+    Log an AI activity event to Redis. Stores in lists, publishes to SSE,
+    and tracks daily stats. Never raises -- errors are silently logged.
+    """
+    try:
+        entry = {
+            "id": str(uuid.uuid4()),
+            "timestamp": datetime.utcnow().isoformat(),
+            "category": category,
+            "action": action,
+            "level": level,
+            "symbol": symbol,
+            "confidence": confidence,
+            "details": details or {},
+        }
+        if chain_id:
+            entry["chain_id"] = chain_id
+
+        entry_json = json.dumps(entry)
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        expire_seconds = 30 * 24 * 3600  # 30 days
+
+        pipe = redis_client.pipeline()
+
+        # Main log list (capped at 10000)
+        pipe.lpush("ai:logs", entry_json)
+        pipe.ltrim("ai:logs", 0, 9999)
+
+        # Per-category list (capped at 1000)
+        cat_key = f"ai:logs:{category}"
+        pipe.lpush(cat_key, entry_json)
+        pipe.ltrim(cat_key, 0, 999)
+
+        # Publish to SSE channel
+        pipe.publish("ai:activity", entry_json)
+
+        # Daily stats hash
+        stats_key = f"ai:stats:{today}"
+        pipe.hincrby(stats_key, "total", 1)
+        pipe.hincrby(stats_key, f"cat:{category}", 1)
+        pipe.hincrby(stats_key, f"level:{level}", 1)
+        if symbol:
+            pipe.hincrby(stats_key, f"symbol:{symbol}", 1)
+        pipe.expire(stats_key, expire_seconds)
+
+        # Daily confidence tracking
+        if confidence > 0:
+            conf_key = f"ai:confidence:{today}"
+            pipe.rpush(conf_key, json.dumps({"category": category, "confidence": confidence}))
+            pipe.expire(conf_key, expire_seconds)
+
+        await pipe.execute()
+        logger.debug("AI activity logged", category=category, action=action, level=level)
+    except Exception as e:
+        logger.warning("Failed to log AI activity", error=str(e))
 
 
 # =============================================
@@ -235,7 +389,18 @@ async def get_signals_v2(limit: int = 20):
     """Get recent trading signals."""
     try:
         response = await http_client.get(f"{SERVICES['signal']}/signals", timeout=5.0)
-        return response.json()
+        data = response.json()
+        # Log when signals contain actionable data
+        if data:
+            signal_count = len(data) if isinstance(data, list) else len(data) if isinstance(data, dict) else 0
+            if signal_count > 0:
+                await log_ai_activity(
+                    category=AILogCategory.SIGNAL,
+                    action="signals_fetched",
+                    level=AILogLevel.INFO,
+                    details={"signal_count": signal_count},
+                )
+        return data
     except Exception as e:
         return []
 
@@ -464,6 +629,21 @@ async def get_system_health():
     except Exception:
         pass
 
+    # Log system health check as AI activity
+    healthy_count = sum(1 for s in services if s["status"] == "healthy")
+    down_count = sum(1 for s in services if s["status"] == "down")
+    if down_count > 0:
+        await log_ai_activity(
+            category=AILogCategory.SYSTEM,
+            action="health_check",
+            level=AILogLevel.WARNING,
+            details={
+                "healthy": healthy_count,
+                "down": down_count,
+                "down_services": [s["name"] for s in services if s["status"] == "down"],
+            },
+        )
+
     return {
         "services": services,
         "redis": redis_info,
@@ -580,12 +760,13 @@ async def stream_updates():
 
     async def event_generator():
         pubsub = redis_client.pubsub()
-        # Subscribe to key channels
+        # Subscribe to key channels including AI activity
         await pubsub.psubscribe(
             "ticks:BTC_USDT", "ticks:ETH_USDT", "ticks:SOL_USDT",
             "filled_orders", "position_opened", "position_closed",
             "sentiment_update", "trend_update",
         )
+        await pubsub.subscribe("ai:activity")
 
         try:
             while True:
@@ -595,7 +776,9 @@ async def stream_updates():
                         data = json.loads(message["data"])
                         channel = message.get("channel", message.get("pattern", ""))
 
-                        if "ticks:" in channel:
+                        if channel == "ai:activity":
+                            event = {"type": "ai_activity", **data}
+                        elif "ticks:" in channel:
                             event = {
                                 "type": "price_update",
                                 "symbol": data.get("symbol", ""),
@@ -1382,32 +1565,78 @@ async def chat_endpoint(req: ChatRequest):
     cash = summary.get("usdt_balance", 0)
     pos_count = len(positions_data)
 
-    # Try LLM if key configured
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if api_key:
+    # Gather market prices from Redis for richer context
+    market_context = {}
+    for pair in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
         try:
-            llm_resp = await http_client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": "gpt-3.5-turbo",
-                    "messages": [
-                        {"role": "system", "content": f"""You are Goblin, an AI trading assistant. Be concise, specific, slightly playful.
-Current portfolio: total_value=${total_val:.2f}, cash=${cash:.2f}, {pos_count} positions.
-Positions: {json.dumps({k: v for k, v in list(positions_data.items())[:5]})}
-Recent signals: {json.dumps(recent_signals[:3])}
-Recent trades: {json.dumps(recent_trades[:3])}
-Never recommend specific trades."""},
-                        {"role": "user", "content": req.message},
-                    ],
-                    "max_tokens": 300,
-                },
-                timeout=15.0,
-            )
-            if llm_resp.status_code == 200:
-                return {"response": llm_resp.json()["choices"][0]["message"]["content"]}
+            price_data = await redis_client.hgetall(f"ticker:{pair}")
+            if price_data:
+                market_context[pair] = price_data
         except Exception:
             pass
+    # Also try the ticks key format
+    if not market_context:
+        for pair in ["BTC_USDT", "ETH_USDT", "SOL_USDT"]:
+            try:
+                price_data = await redis_client.hgetall(f"price:{pair}")
+                if price_data:
+                    market_context[pair] = price_data
+            except Exception:
+                pass
+
+    # Try Gemini AI (new google.genai SDK)
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    used_gemini = False
+    if gemini_key:
+        try:
+            from google import genai as genai_client
+
+            system_context = f"""You are Goblin AI, the intelligent assistant for the Goblin AI Trading Platform.
+You have access to real-time portfolio data, market signals, and trading history.
+You help traders understand their positions, market conditions, and AI model predictions.
+Be concise, data-driven, and actionable. Use the provided context data in your responses.
+Never recommend specific trades or give financial advice. Always remind users this is paper trading.
+
+CURRENT PLATFORM DATA:
+- Portfolio: total_value=${total_val:.2f}, cash=${cash:.2f}, {pos_count} open position(s)
+- Positions: {json.dumps({k: v for k, v in list(positions_data.items())[:5]}) if positions_data else 'No open positions'}
+- Recent signals: {json.dumps(recent_signals[:3]) if recent_signals else 'No recent signals'}
+- Recent trades: {json.dumps(recent_trades[:3], default=str) if recent_trades else 'No recent trades'}
+- Market prices: {json.dumps(market_context, default=str) if market_context else 'Prices loading...'}
+- Mode: Paper trading (no real money at risk)"""
+
+            client = genai_client.Client(api_key=gemini_key)
+            # Try models in order of preference
+            for model_name in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+                try:
+                    response = await asyncio.to_thread(
+                        lambda mn=model_name: client.models.generate_content(
+                            model=mn,
+                            contents=f"{system_context}\n\nUser question: {req.message}",
+                            config={"max_output_tokens": 400, "temperature": 0.7},
+                        )
+                    )
+                    if response and response.text:
+                        used_gemini = True
+                        # Determine topic from user message
+                        topic = message[:50] if len(message) > 50 else message
+                        await log_ai_activity(
+                            category=AILogCategory.CHAT,
+                            action="chat_response",
+                            level=AILogLevel.INFO,
+                            details={
+                                "topic": topic,
+                                "engine": "gemini",
+                                "model": model_name,
+                                "message_length": len(req.message),
+                            },
+                        )
+                        return {"response": response.text}
+                except Exception as model_err:
+                    logger.warning(f"Gemini model {model_name} failed", error=str(model_err))
+                    continue
+        except Exception as e:
+            logger.warning("Gemini API failed, falling back to rule-based", error=str(e))
 
     # Rule-based fallback
     response = ""
@@ -1435,6 +1664,19 @@ Never recommend specific trades."""},
         response = f"Hey there! I'm Goblin, your AI trading assistant. Your portfolio is at ${total_val:.2f}. Ask me about your positions, recent trades, or market outlook!"
     else:
         response = f"I can help with portfolio questions, trade explanations, and market outlook. Your current portfolio: ${total_val:.2f} with {pos_count} positions. Try asking 'How's my portfolio?' or 'Why did the AI buy BTC?'"
+
+    if not used_gemini:
+        topic = message[:50] if len(message) > 50 else message
+        await log_ai_activity(
+            category=AILogCategory.CHAT,
+            action="chat_response",
+            level=AILogLevel.INFO,
+            details={
+                "topic": topic,
+                "engine": "rule_based",
+                "message_length": len(req.message),
+            },
+        )
 
     return {"response": response}
 
@@ -1529,14 +1771,14 @@ async def get_defi_overview():
         protocols = protocols_resp.json()
         chains = chains_resp.json()
 
-        total_tvl = sum(c.get("tvl", 0) for c in chains)
-        top_protocols = sorted(protocols, key=lambda p: p.get("tvl", 0), reverse=True)[:10]
-        top_chains = sorted(chains, key=lambda c: c.get("tvl", 0), reverse=True)[:10]
+        total_tvl = sum(c.get("tvl") or 0 for c in chains)
+        top_protocols = sorted(protocols, key=lambda p: p.get("tvl") or 0, reverse=True)[:10]
+        top_chains = sorted(chains, key=lambda c: c.get("tvl") or 0, reverse=True)[:10]
 
         return {
             "total_tvl": total_tvl,
-            "top_protocols": [{"name": p["name"], "tvl": p.get("tvl", 0), "change_1d": p.get("change_1d", 0), "change_7d": p.get("change_7d", 0), "category": p.get("category", ""), "logo": p.get("logo", "")} for p in top_protocols],
-            "top_chains": [{"name": c["name"], "tvl": c.get("tvl", 0)} for c in top_chains],
+            "top_protocols": [{"name": p["name"], "tvl": p.get("tvl") or 0, "change_1d": p.get("change_1d") or 0, "change_7d": p.get("change_7d") or 0, "category": p.get("category") or "", "logo": p.get("logo") or ""} for p in top_protocols],
+            "top_chains": [{"name": c["name"], "tvl": c.get("tvl") or 0} for c in top_chains],
         }
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="External API timeout - DeFiLlama")
@@ -1829,6 +2071,188 @@ async def get_benchmark(days: int = 90):
         raise HTTPException(status_code=502, detail=f"External API error: {e.response.status_code}")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to fetch benchmark data: {str(e)}")
+
+
+# =============================================
+# AI Activity Log Endpoints
+# =============================================
+
+@app.get("/api/v2/ai/logs")
+async def get_ai_logs(
+    category: Optional[str] = None,
+    level: Optional[str] = None,
+    symbol: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """Query AI activity logs with optional filters."""
+    try:
+        capped_limit = min(limit, 500)
+        # Fetch more than needed to account for filtering
+        fetch_count = (capped_limit + offset) * 3 if (category or level or symbol) else capped_limit + offset
+        fetch_count = min(fetch_count, 10000)
+
+        raw_logs = await redis_client.lrange("ai:logs", 0, fetch_count - 1)
+        entries = []
+        for raw in raw_logs:
+            try:
+                entry = json.loads(raw)
+                if category and entry.get("category") != category:
+                    continue
+                if level and entry.get("level") != level:
+                    continue
+                if symbol and entry.get("symbol") != symbol:
+                    continue
+                entries.append(entry)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        # Apply offset and limit (entries are already newest-first from LPUSH)
+        paginated = entries[offset:offset + capped_limit]
+        return paginated
+    except Exception as e:
+        logger.error("Failed to fetch AI logs", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v2/ai/logs/stream")
+async def stream_ai_logs():
+    """SSE endpoint for real-time AI activity events."""
+
+    async def ai_event_generator():
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe("ai:activity")
+        heartbeat_interval = 2.0
+        try:
+            while True:
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
+                if message and message["type"] == "message":
+                    try:
+                        yield f"data: {message['data']}\n\n"
+                    except Exception:
+                        continue
+                else:
+                    # Heartbeat every ~2 seconds
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': datetime.utcnow().isoformat()})}\n\n"
+                    await asyncio.sleep(heartbeat_interval)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await pubsub.unsubscribe()
+            await pubsub.close()
+
+    return StreamingResponse(
+        ai_event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+@app.get("/api/v2/ai/stats")
+async def get_ai_stats():
+    """Get aggregated AI activity stats for today."""
+    try:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        stats_key = f"ai:stats:{today}"
+        conf_key = f"ai:confidence:{today}"
+
+        raw_stats = await redis_client.hgetall(stats_key)
+        total_events = int(raw_stats.get("total", 0))
+
+        events_by_category = {}
+        events_by_level = {}
+        top_symbols = {}
+        for k, v in raw_stats.items():
+            if k.startswith("cat:"):
+                events_by_category[k[4:]] = int(v)
+            elif k.startswith("level:"):
+                events_by_level[k[6:]] = int(v)
+            elif k.startswith("symbol:"):
+                top_symbols[k[7:]] = int(v)
+
+        # Sort symbols by count descending
+        top_symbols = dict(sorted(top_symbols.items(), key=lambda x: x[1], reverse=True)[:20])
+
+        # Compute average confidence by category
+        avg_confidence_by_category = {}
+        raw_confs = await redis_client.lrange(conf_key, 0, -1)
+        cat_confs = {}
+        for raw in raw_confs:
+            try:
+                c = json.loads(raw)
+                cat = c.get("category", "unknown")
+                if cat not in cat_confs:
+                    cat_confs[cat] = []
+                cat_confs[cat].append(c.get("confidence", 0))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        for cat, vals in cat_confs.items():
+            if vals:
+                avg_confidence_by_category[cat] = round(sum(vals) / len(vals), 4)
+
+        return {
+            "date": today,
+            "total_events_today": total_events,
+            "events_by_category": events_by_category,
+            "events_by_level": events_by_level,
+            "top_symbols": top_symbols,
+            "avg_confidence_by_category": avg_confidence_by_category,
+        }
+    except Exception as e:
+        logger.error("Failed to fetch AI stats", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v2/ai/timeline")
+async def get_ai_timeline():
+    """Get decision chains from AI activity logs."""
+    try:
+        raw_logs = await redis_client.lrange("ai:logs", 0, 9999)
+        chains = {}
+        for raw in raw_logs:
+            try:
+                entry = json.loads(raw)
+                cid = entry.get("chain_id")
+                if not cid:
+                    continue
+                if cid not in chains:
+                    chains[cid] = {
+                        "chain_id": cid,
+                        "events": [],
+                        "first_seen": entry["timestamp"],
+                        "last_seen": entry["timestamp"],
+                    }
+                chains[cid]["events"].append(entry)
+                # Update timestamps (logs are newest-first, so adjust)
+                if entry["timestamp"] < chains[cid]["first_seen"]:
+                    chains[cid]["first_seen"] = entry["timestamp"]
+                if entry["timestamp"] > chains[cid]["last_seen"]:
+                    chains[cid]["last_seen"] = entry["timestamp"]
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        # Build response: sort chains by most recent activity
+        result = []
+        for cid, chain_data in chains.items():
+            # Sort events within each chain chronologically
+            chain_data["events"].sort(key=lambda e: e.get("timestamp", ""))
+            # Determine outcome from the last event
+            last_event = chain_data["events"][-1] if chain_data["events"] else {}
+            chain_data["outcome"] = last_event.get("action", "unknown")
+            chain_data["event_count"] = len(chain_data["events"])
+            result.append(chain_data)
+
+        result.sort(key=lambda c: c.get("last_seen", ""), reverse=True)
+        return result
+    except Exception as e:
+        logger.error("Failed to fetch AI timeline", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/metrics", response_class=PlainTextResponse)

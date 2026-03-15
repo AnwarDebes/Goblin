@@ -41,7 +41,7 @@ shared/*/
 
 # Docker logs and temp files
 *.log
-logs/
+/logs/
 *.pid
 *.sock
 

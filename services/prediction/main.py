@@ -41,11 +41,11 @@ from models.model_registry import ModelRegistry
 # Configuration
 # ---------------------------------------------------------------------------
 
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 MODEL_DIR = os.getenv("MODEL_DIR", "/app/shared/models")
-FEATURE_STORE_URL = os.getenv("FEATURE_STORE_URL", "http://feature-store:8003")
+FEATURE_STORE_URL = os.getenv("FEATURE_STORE_URL", "http://localhost:8007")
 INFERENCE_INTERVAL = float(os.getenv("INFERENCE_INTERVAL", 5.0))
 TRADING_PAIRS_FILE = os.getenv("TRADING_PAIRS_FILE", "")
 TRADING_PAIRS = os.getenv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT").split(",")
@@ -387,6 +387,23 @@ async def collect_market_data():
                 logger.debug("Tick parse error", error=str(exc))
 
 
+async def model_reload_watcher():
+    """Watch for model update signals from the continuous learner and hot-reload."""
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe("model:reload")
+    logger.info("Model reload watcher started")
+
+    async for message in pubsub.listen():
+        if message["type"] == "message":
+            logger.info("Model reload signal received, reloading models...")
+            try:
+                load_models()
+                mode = "ml" if _ml_mode_available() else "legacy"
+                logger.info("Models hot-reloaded", mode=mode)
+            except Exception as exc:
+                logger.error("Model reload failed", error=str(exc))
+
+
 async def prediction_loop():
     """Batch inference every INFERENCE_INTERVAL seconds."""
     while True:
@@ -473,11 +490,13 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     data_task = asyncio.create_task(collect_market_data())
     pred_task = asyncio.create_task(prediction_loop())
+    reload_task = asyncio.create_task(model_reload_watcher())
 
     yield
 
     data_task.cancel()
     pred_task.cancel()
+    reload_task.cancel()
     if redis_client:
         await redis_client.close()
 
