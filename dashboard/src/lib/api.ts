@@ -478,33 +478,91 @@ export interface ResourceMetrics {
   status: "running" | "stopped" | "restarting" | "paused";
 }
 
-export async function getResourceMetrics(): Promise<ResourceMetrics[]> {
+export interface GpuMetrics {
+  gpu_name: string;
+  gpu_memory_total_mb: number;
+  gpu_memory_used_mb: number;
+  gpu_memory_free_mb: number;
+  gpu_utilization_percent: number;
+  gpu_temperature_c: number;
+  gpu_power_watts: number;
+}
+
+export interface SystemSummary {
+  cpu_count: number;
+  cpu_percent_total: number;
+  memory_total_mb: number;
+  memory_used_mb: number;
+  memory_available_mb: number;
+  memory_percent: number;
+  gpu?: GpuMetrics;
+  network_rx_total_mb?: number;
+  network_tx_total_mb?: number;
+}
+
+export interface ResourceData {
+  services: ResourceMetrics[];
+  system: SystemSummary;
+}
+
+function parseServiceRow(raw: unknown): ResourceMetrics {
+  const row = asRecord(raw);
+  return {
+    container: String(row.container || "unknown"),
+    cpu_percent: asNumber(row.cpu_percent),
+    memory_used_mb: asNumber(row.memory_used_mb),
+    memory_limit_mb: asNumber(row.memory_limit_mb, 512),
+    memory_percent: asNumber(row.memory_percent),
+    network_rx_mb: asNumber(row.network_rx_mb),
+    network_tx_mb: asNumber(row.network_tx_mb),
+    disk_read_mb: asNumber(row.disk_read_mb),
+    disk_write_mb: asNumber(row.disk_write_mb),
+    uptime_seconds: asNumber(row.uptime_seconds),
+    restart_count: asNumber(row.restart_count),
+    status: (["running", "stopped", "restarting", "paused"].includes(String(row.status))
+      ? String(row.status)
+      : "stopped") as ResourceMetrics["status"],
+  };
+}
+
+export async function getResourceData(): Promise<ResourceData> {
   try {
-    const data = await requestJson<unknown[]>("/api/v2/resources");
-    if (!Array.isArray(data)) return [];
-    return data.map((raw) => {
-      const row = asRecord(raw);
-      return {
-        container: String(row.container || "unknown"),
-        cpu_percent: asNumber(row.cpu_percent),
-        memory_used_mb: asNumber(row.memory_used_mb),
-        memory_limit_mb: asNumber(row.memory_limit_mb, 512),
-        memory_percent: asNumber(row.memory_percent),
-        network_rx_mb: asNumber(row.network_rx_mb),
-        network_tx_mb: asNumber(row.network_tx_mb),
-        disk_read_mb: asNumber(row.disk_read_mb),
-        disk_write_mb: asNumber(row.disk_write_mb),
-        uptime_seconds: asNumber(row.uptime_seconds),
-        restart_count: asNumber(row.restart_count),
-        status: (["running", "stopped", "restarting", "paused"].includes(String(row.status))
-          ? String(row.status)
-          : "stopped") as ResourceMetrics["status"],
-      };
-    });
+    const data = await requestJson<Record<string, unknown>>("/api/v2/resources");
+    const servicesRaw = Array.isArray(data.services) ? data.services : (Array.isArray(data) ? data : []);
+    const sysRaw = asRecord(data.system);
+    const gpuRaw = asRecord(sysRaw.gpu);
+    return {
+      services: servicesRaw.map(parseServiceRow),
+      system: {
+        cpu_count: asNumber(sysRaw.cpu_count, 96),
+        cpu_percent_total: asNumber(sysRaw.cpu_percent_total),
+        memory_total_mb: asNumber(sysRaw.memory_total_mb, 24 * 1024),
+        memory_used_mb: asNumber(sysRaw.memory_used_mb),
+        memory_available_mb: asNumber(sysRaw.memory_available_mb),
+        memory_percent: asNumber(sysRaw.memory_percent),
+        gpu: gpuRaw.gpu_name ? {
+          gpu_name: String(gpuRaw.gpu_name),
+          gpu_memory_total_mb: asNumber(gpuRaw.gpu_memory_total_mb),
+          gpu_memory_used_mb: asNumber(gpuRaw.gpu_memory_used_mb),
+          gpu_memory_free_mb: asNumber(gpuRaw.gpu_memory_free_mb),
+          gpu_utilization_percent: asNumber(gpuRaw.gpu_utilization_percent),
+          gpu_temperature_c: asNumber(gpuRaw.gpu_temperature_c),
+          gpu_power_watts: asNumber(gpuRaw.gpu_power_watts),
+        } : undefined,
+        network_rx_total_mb: asNumber(sysRaw.network_rx_total_mb),
+        network_tx_total_mb: asNumber(sysRaw.network_tx_total_mb),
+      },
+    };
   } catch (err) {
-    console.error("[api] getResourceMetrics failed:", err);
-    return [];
+    console.error("[api] getResourceData failed:", err);
+    return { services: [], system: { cpu_count: 96, cpu_percent_total: 0, memory_total_mb: 24 * 1024, memory_used_mb: 0, memory_available_mb: 0, memory_percent: 0 } };
   }
+}
+
+/** @deprecated Use getResourceData() instead */
+export async function getResourceMetrics(): Promise<ResourceMetrics[]> {
+  const data = await getResourceData();
+  return data.services;
 }
 
 /* ── Signal Explanation ────────────────────────────────────────────── */

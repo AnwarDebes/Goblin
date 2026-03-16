@@ -190,6 +190,40 @@ class TCNModel:
 
         return direction, confidence
 
+    def predict_batch(self, sequences: list) -> list:
+        """
+        Batched GPU inference — processes all sequences in a single forward pass.
+
+        Parameters
+        ----------
+        sequences : list of ndarray, each of shape (timesteps, n_features)
+
+        Returns
+        -------
+        list of (direction, confidence) tuples
+        """
+        if not sequences:
+            return []
+
+        net = self._ensure_network()
+        net.eval()
+
+        stacked = np.stack(sequences, axis=0)  # (N, timesteps, features)
+        tensor = torch.tensor(stacked, dtype=torch.float32).to(self.device)
+
+        with torch.no_grad():
+            logits = net(tensor)
+            probs = F.softmax(logits, dim=1).cpu().numpy()  # (N, n_classes)
+
+        classes = np.argmax(probs, axis=1)
+        results = []
+        for i in range(len(classes)):
+            cls = int(classes[i])
+            conf = float(probs[i, cls])
+            direction = DIRECTION_MAP.get(cls, "neutral")
+            results.append((direction, conf))
+        return results
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -199,8 +233,17 @@ class TCNModel:
         if not os.path.isfile(path):
             raise FileNotFoundError(f"TCN weights not found: {path}")
 
-        net = self._ensure_network()
         state = torch.load(path, map_location=self.device, weights_only=True)
+
+        # Adapt to model architecture stored in checkpoint (supports dynamic hidden_channels)
+        if "hidden_channels" in state and state["hidden_channels"] != self.hidden_channels:
+            self.hidden_channels = state["hidden_channels"]
+            self.network = None  # Force re-creation with new dimensions
+        if "n_features" in state and state["n_features"] != self.n_features:
+            self.n_features = state["n_features"]
+            self.network = None
+
+        net = self._ensure_network()
 
         # Support both raw state_dict and wrapped checkpoint dicts
         if "model_state_dict" in state:
@@ -209,7 +252,8 @@ class TCNModel:
             net.load_state_dict(state)
 
         self._loaded = True
-        logger.info("TCN model loaded", path=path, device=str(self.device))
+        logger.info("TCN model loaded", path=path, device=str(self.device),
+                     hidden_channels=self.hidden_channels)
 
     def save(self, path: str) -> None:
         """Save model weights to a ``.pt`` file."""

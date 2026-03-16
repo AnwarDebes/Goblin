@@ -23,7 +23,8 @@ STARTING_CAPITAL = float(os.getenv("STARTING_CAPITAL", 11.0))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", 0.50))
 MIN_POSITION_USD = float(os.getenv("MIN_POSITION_USD", 1.0))
 MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", 0.20))
-MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", 2))
+# MAX_OPEN_POSITIONS removed — the system dynamically limits positions based on
+# available capital, MIN_POSITION_USD, and confidence.  No artificial cap.
 MIN_TIME_BETWEEN_TRADES = int(os.getenv("MIN_TIME_BETWEEN_TRADES", 60))
 PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", 0.001))  # 0.1% profit target
 MAX_TRADE_LOSS_PCT = float(os.getenv("MAX_TRADE_LOSS_PCT", 0.005))  # 0.5% stop loss
@@ -50,6 +51,7 @@ class Signal(BaseModel):
 class Portfolio(BaseModel):
     total_capital: float = STARTING_CAPITAL
     available_capital: float = STARTING_CAPITAL
+    starting_capital: float = STARTING_CAPITAL
     daily_pnl: float = 0.0
     open_positions: int = 0
     last_trade_time: Optional[str] = None
@@ -67,9 +69,11 @@ async def validate_signal(signal: Signal) -> tuple[bool, str, float]:
     if portfolio.daily_pnl <= -(STARTING_CAPITAL * MAX_DAILY_LOSS_PCT):
         return False, "daily_loss_limit_reached", 0
 
-    # Check max positions (buys only)
-    if signal.action == "buy" and portfolio.open_positions >= MAX_OPEN_POSITIONS:
-        return False, "max_positions_reached", 0
+    # Dynamic position limit: reject if remaining capital can't fund a minimum-sized position
+    if signal.action == "buy":
+        remaining_after = portfolio.available_capital - signal.amount
+        if remaining_after < MIN_POSITION_USD * 0.5:
+            return False, "insufficient_capital_for_new_positions", 0
 
     # Check time between trades
     if portfolio.last_trade_time:
@@ -78,7 +82,13 @@ async def validate_signal(signal: Signal) -> tuple[bool, str, float]:
             return False, f"too_soon_wait_{int(MIN_TIME_BETWEEN_TRADES - seconds_since)}s", 0
 
     # Check position size
-    trade_value = signal.amount * signal.price
+    # For buys: signal.amount is USDT value (e.g. $1.50), not coin quantity
+    # For sells: signal.amount is coin quantity
+    if signal.action == "buy":
+        trade_value = signal.amount  # Already in USDT
+    else:
+        trade_value = signal.amount * signal.price
+
     max_position = portfolio.available_capital * MAX_POSITION_PCT
 
     if trade_value < MIN_POSITION_USD:
@@ -86,9 +96,14 @@ async def validate_signal(signal: Signal) -> tuple[bool, str, float]:
 
     adjusted_amount = signal.amount
     if trade_value > max_position:
-        adjusted_amount = max_position / signal.price
+        if signal.action == "buy":
+            adjusted_amount = max_position  # Cap USDT amount
+        else:
+            adjusted_amount = max_position / signal.price
 
-    if adjusted_amount * signal.price > portfolio.available_capital:
+    if signal.action == "buy" and adjusted_amount > portfolio.available_capital:
+        return False, "insufficient_capital", 0
+    elif signal.action == "sell" and adjusted_amount * signal.price > portfolio.available_capital:
         return False, "insufficient_capital", 0
 
     return True, "approved", adjusted_amount
@@ -155,7 +170,7 @@ async def lifespan(app: FastAPI):
         "MAX_POSITION_PCT": MAX_POSITION_PCT,
         "MIN_POSITION_USD": MIN_POSITION_USD,
         "MAX_DAILY_LOSS_PCT": MAX_DAILY_LOSS_PCT,
-        "MAX_OPEN_POSITIONS": MAX_OPEN_POSITIONS,
+        "MAX_OPEN_POSITIONS": "dynamic",
         "MIN_TIME_BETWEEN_TRADES": MIN_TIME_BETWEEN_TRADES
     }
     await redis_client.set("risk_parameters", json.dumps(risk_parameters))
@@ -185,22 +200,12 @@ async def get_portfolio():
     portfolio_state_str = await redis_client.get("portfolio_state")
     if portfolio_state_str:
         portfolio_data = json.loads(portfolio_state_str)
-        # Update local portfolio object
+        # Update local portfolio object from executor-synced state (authoritative)
         portfolio.available_capital = portfolio_data.get("available_capital", portfolio.available_capital)
+        portfolio.total_capital = portfolio_data.get("total_capital", portfolio.total_capital)
         portfolio.open_positions = portfolio_data.get("open_positions", 0)
         portfolio.daily_pnl = portfolio_data.get("daily_pnl", 0.0)
         portfolio.last_trade_time = portfolio_data.get("last_trade_time", portfolio.last_trade_time)
-        
-        # Calculate total capital from positions
-        positions_data = await redis_client.hgetall("positions")
-        total_position_value = 0
-        for symbol, pos_data in positions_data.items():
-            pos = json.loads(pos_data)
-            if pos.get("status") == "open":
-                total_position_value += pos.get("current_price", 0) * pos.get("amount", 0)
-        
-        # Total capital = available USDT + position values
-        portfolio.total_capital = portfolio.available_capital + total_position_value
     
     return portfolio
 
@@ -208,7 +213,7 @@ async def get_portfolio():
 @app.get("/limits")
 async def get_limits():
     return {"max_position_pct": MAX_POSITION_PCT, "min_position_usd": MIN_POSITION_USD,
-            "max_daily_loss_pct": MAX_DAILY_LOSS_PCT, "max_open_positions": MAX_OPEN_POSITIONS}
+            "max_daily_loss_pct": MAX_DAILY_LOSS_PCT, "max_open_positions": "dynamic"}
 
 
 @app.post("/update-capital")

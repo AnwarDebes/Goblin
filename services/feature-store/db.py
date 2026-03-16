@@ -55,7 +55,7 @@ async def init_pool() -> asyncpg.Pool:
         user=POSTGRES_USER,
         password=POSTGRES_PASSWORD,
         min_size=2,
-        max_size=10,
+        max_size=int(os.getenv("DB_POOL_MAX_SIZE", "20")),
     )
     logger.info("TimescaleDB pool initialized", host=POSTGRES_HOST, db=POSTGRES_DB)
     return _pool

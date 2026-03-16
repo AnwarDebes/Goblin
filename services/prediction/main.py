@@ -29,7 +29,7 @@ from fastapi.responses import PlainTextResponse
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel
 
-from features.technical import compute_technical_features
+from features.technical import compute_technical_features, compute_features_matrix
 from features.sentiment import fetch_sentiment_features
 from features.onchain import fetch_onchain_features
 from models.tcn_model import TCNModel
@@ -239,114 +239,48 @@ def _legacy_predict(ticks: List[dict]) -> Optional[PredictionResponse]:
 # ML inference
 # ---------------------------------------------------------------------------
 
-async def _ml_predict(symbol: str, ticks: List[dict]) -> Optional[PredictionResponse]:
-    """Run the full ML ensemble pipeline for a single symbol."""
-    if len(ticks) < 60:
-        return None
+def _safe_float(v, default=0.0):
+    """Clamp NaN/Inf to default."""
+    if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
+        return default
+    return float(v)
 
-    start = time.monotonic()
 
-    # Build candle DataFrame
-    df = pd.DataFrame(ticks[-120:])
+def _prepare_symbol_features(symbol: str, ticks_snapshot: List[dict]) -> Optional[dict]:
+    """CPU-bound: build DataFrame, compute technical features and TCN sequence for one symbol.
+
+    Runs in thread pool. Returns prepared data for batched GPU inference.
+    Uses vectorized feature computation — one pass over the DataFrame, not 60.
+    """
+    df = pd.DataFrame(ticks_snapshot[-120:])
     for col in ("open", "high", "low", "close", "volume"):
         if col not in df.columns:
             df[col] = df.get("price", 0)
 
-    # Compute technical features
     tech_features = compute_technical_features(df)
 
-    # Fetch sentiment and on-chain
-    sentiment_feats = await fetch_sentiment_features(
-        symbol, redis_client=redis_client, feature_store_url=FEATURE_STORE_URL,
-    )
-    onchain_feats = await fetch_onchain_features(
-        symbol, redis_client=redis_client, feature_store_url=FEATURE_STORE_URL,
-    )
-
-    tcn_pred: Optional[ModelPrediction] = None
-    xgb_pred: Optional[ModelPrediction] = None
-
-    # TCN inference (needs sequence)
-    if tcn_model is not None and tcn_model.is_loaded:
+    # Build TCN sequence using vectorized feature computation (single pass)
+    tcn_sequence = None
+    if len(df) >= 60:
         try:
-            # Build sequence: last 60 rows of technical features
-            seq_rows = []
-            start_idx = max(0, len(df) - 60)
-            for i in range(start_idx, len(df)):
-                window = df.iloc[max(0, i - 59) : i + 1]
-                row_feats = compute_technical_features(window)
-                seq_rows.append([row_feats.get(k, 0.0) for k in sorted(row_feats.keys())])
+            feat_matrix = compute_features_matrix(df)  # (N, 20) — one call
+            tcn_sequence = feat_matrix[-60:]  # last 60 rows
+        except Exception:
+            pass
 
-            if len(seq_rows) >= 60:
-                sequence = np.array(seq_rows[-60:], dtype=np.float32)
-                direction, confidence = tcn_model.predict(sequence)
-                tcn_pred = ModelPrediction(direction=direction, confidence=confidence)
-        except Exception as exc:
-            logger.warning("TCN inference failed", symbol=symbol, error=str(exc))
-
-    # XGBoost inference (flat feature vector)
-    if xgb_model is not None and xgb_model.is_loaded:
-        try:
-            all_features = {**tech_features, **sentiment_feats, **onchain_feats}
-            direction, confidence, probs = xgb_model.predict(all_features)
-            xgb_pred = ModelPrediction(direction=direction, confidence=confidence, probabilities=probs)
-        except Exception as exc:
-            logger.warning("XGBoost inference failed", symbol=symbol, error=str(exc))
-
-    # Sentiment aggregate score
-    sentiment_score = sentiment_feats.get("sentiment_score", 0.0)
-
-    # On-chain aggregate score (average of normalised metrics)
-    onchain_vals = [v for v in onchain_feats.values() if isinstance(v, (int, float))]
-    onchain_score = float(np.mean(onchain_vals)) if onchain_vals else 0.0
-
-    # Ensemble
-    result: EnsemblePrediction = ensemble.combine(
-        tcn_pred=tcn_pred,
-        xgb_pred=xgb_pred,
-        sentiment_score=sentiment_score,
-        onchain_score=onchain_score,
-    )
-
-    elapsed = time.monotonic() - start
-    PREDICTION_LATENCY.observe(elapsed)
-    PREDICTIONS_TOTAL.labels(symbol=symbol, direction=result.direction).inc()
-    MODEL_CONFIDENCE.labels(symbol=symbol).set(result.confidence)
-
-    agreement = 0
-    if tcn_pred and xgb_pred:
-        from models.ensemble import _direction_sign
-        agreement = 1 if _direction_sign(tcn_pred.direction) == _direction_sign(xgb_pred.direction) else 0
-    ENSEMBLE_AGREEMENT.labels(symbol=symbol).set(agreement)
-
-    return PredictionResponse(
-        symbol=symbol,
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        direction=result.direction,
-        confidence=result.confidence,
-        score=result.score,
-        current_price=float(df["close"].iloc[-1]),
-        mode="ml",
-        breakdown=result.breakdown,
-        tcn_direction=tcn_pred.direction if tcn_pred else None,
-        tcn_confidence=round(tcn_pred.confidence, 4) if tcn_pred else None,
-        xgb_direction=xgb_pred.direction if xgb_pred else None,
-        xgb_confidence=round(xgb_pred.confidence, 4) if xgb_pred else None,
-    )
+    return {
+        "symbol": symbol,
+        "df": df,
+        "tech_features": tech_features,
+        "tcn_sequence": tcn_sequence,
+    }
 
 
 async def make_prediction(symbol: str) -> Optional[PredictionResponse]:
-    """Generate a prediction for *symbol*, using ML or falling back to legacy."""
+    """Generate a prediction for *symbol* (single-symbol fallback path)."""
     ticks = price_history.get(symbol)
     if not ticks or len(ticks) < 20:
         return None
-
-    if _ml_mode_available():
-        pred = await _ml_predict(symbol, ticks)
-        if pred is not None:
-            return pred
-
-    # Fallback: legacy TA
     for t in ticks:
         t["symbol"] = symbol
     return _legacy_predict(ticks)
@@ -356,83 +290,388 @@ async def make_prediction(symbol: str) -> Optional[PredictionResponse]:
 # Background tasks
 # ---------------------------------------------------------------------------
 
-async def collect_market_data():
-    """Subscribe to Redis tick channels and accumulate price history."""
+async def seed_price_history_from_db():
+    """Seed price_history from TimescaleDB so ML mode is available immediately after restart."""
     global price_history
-    pubsub = redis_client.pubsub()
-    channels = [f"ticks:{s.strip().replace('/', '_')}" for s in TRADING_PAIRS]
-    logger.info("Subscribing to tick channels", count=len(channels))
-    await pubsub.subscribe(*channels)
+    import asyncpg
 
-    async for message in pubsub.listen():
-        if message["type"] == "message":
-            try:
-                tick = json.loads(message["data"])
-                symbol = tick["symbol"]
-                data_point = {
-                    "timestamp": tick.get("timestamp", datetime.now(timezone.utc).isoformat()),
-                    "open": tick.get("price", 0),
-                    "high": tick.get("price", 0),
-                    "low": tick.get("price", 0),
-                    "close": tick.get("price", 0),
-                    "volume": tick.get("volume", 0),
-                }
-                if symbol not in price_history:
-                    price_history[symbol] = []
-                price_history[symbol].append(data_point)
-                # Keep last 200 ticks
-                if len(price_history[symbol]) > 200:
-                    price_history[symbol] = price_history[symbol][-200:]
-            except Exception as exc:
-                logger.debug("Tick parse error", error=str(exc))
+    pg_host = os.getenv("POSTGRES_HOST", "localhost")
+    pg_port = int(os.getenv("POSTGRES_PORT", 5432))
+    pg_db = os.getenv("POSTGRES_DB", "goblin")
+    pg_user = os.getenv("POSTGRES_USER", "goblin")
+    pg_pass = os.getenv("POSTGRES_PASSWORD", "goblin_pg_pass")
 
+    try:
+        conn = await asyncpg.connect(
+            host=pg_host, port=pg_port, database=pg_db,
+            user=pg_user, password=pg_pass, timeout=10,
+        )
 
-async def model_reload_watcher():
-    """Watch for model update signals from the continuous learner and hot-reload."""
-    pubsub = redis_client.pubsub()
-    await pubsub.subscribe("model:reload")
-    logger.info("Model reload watcher started")
+        seeded = 0
 
-    async for message in pubsub.listen():
-        if message["type"] == "message":
-            logger.info("Model reload signal received, reloading models...")
-            try:
-                load_models()
-                mode = "ml" if _ml_mode_available() else "legacy"
-                logger.info("Models hot-reloaded", mode=mode)
-            except Exception as exc:
-                logger.error("Model reload failed", error=str(exc))
+        # Strategy 1: Seed from ticks table (most granular, real-time data)
+        ticks_exists = await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='ticks')"
+        )
+        if ticks_exists:
+            # Get symbols that have enough tick data
+            symbols_with_data = await conn.fetch(
+                """SELECT symbol, count(*) as cnt FROM ticks
+                   GROUP BY symbol HAVING count(*) >= 60
+                   ORDER BY count(*) DESC"""
+            )
+            for row in symbols_with_data:
+                symbol = row["symbol"]
+                if symbol not in [s.strip() for s in TRADING_PAIRS]:
+                    continue
+                try:
+                    tick_rows = await conn.fetch(
+                        """SELECT time, price, volume FROM ticks
+                           WHERE symbol = $1 ORDER BY time DESC LIMIT 120""",
+                        symbol
+                    )
+                    if tick_rows and len(tick_rows) >= 60:
+                        ticks = []
+                        for tr in reversed(tick_rows):
+                            p = float(tr["price"] or 0)
+                            v = float(tr["volume"] or 0)
+                            ticks.append({
+                                "timestamp": tr["time"].isoformat() if tr["time"] else "",
+                                "open": p, "high": p, "low": p, "close": p,
+                                "volume": v,
+                            })
+                        price_history[symbol] = ticks
+                        seeded += 1
+                except Exception:
+                    pass
 
-
-async def prediction_loop():
-    """Batch inference every INFERENCE_INTERVAL seconds."""
-    while True:
-        await asyncio.sleep(INFERENCE_INTERVAL)
-
-        symbols = list(TRADING_PAIRS)
-        batch_size = 50
-
-        for i in range(0, len(symbols), batch_size):
-            batch = symbols[i : i + batch_size]
-            tasks = [make_prediction(s.strip()) for s in batch]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for symbol, result in zip(batch, results):
-                sym = symbol.strip()
-                if isinstance(result, Exception):
-                    logger.error("Prediction failed", symbol=sym, error=str(result))
-                elif result is not None:
-                    latest_predictions[sym] = result
-                    # Publish to Redis
+        # Strategy 2: Fill remaining symbols from 5m candles
+        candles_exists = await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='candles')"
+        )
+        if candles_exists:
+            for i in range(0, len(TRADING_PAIRS), 200):
+                batch = [s.strip() for s in TRADING_PAIRS[i:i+200]]
+                for symbol in batch:
+                    if symbol in price_history and len(price_history[symbol]) >= 60:
+                        continue  # Already seeded from ticks
                     try:
-                        await redis_client.publish(
-                            f"predictions:{sym.replace('/', '_')}",
-                            result.model_dump_json(),
+                        rows = await conn.fetch(
+                            """SELECT time, open, high, low, close, volume
+                               FROM candles WHERE symbol = $1 AND timeframe = '5m'
+                               ORDER BY time DESC LIMIT 120""",
+                            symbol
                         )
+                        if rows and len(rows) >= 20:
+                            ticks = []
+                            for row in reversed(rows):
+                                ticks.append({
+                                    "timestamp": row["time"].isoformat() if row["time"] else "",
+                                    "open": float(row["open"] or 0),
+                                    "high": float(row["high"] or 0),
+                                    "low": float(row["low"] or 0),
+                                    "close": float(row["close"] or 0),
+                                    "volume": float(row["volume"] or 0),
+                                })
+                            price_history[symbol] = ticks
+                            seeded += 1
                     except Exception:
                         pass
 
-            await asyncio.sleep(0.05)
+        await conn.close()
+        ml_ready = sum(1 for v in price_history.values() if len(v) >= 60)
+        logger.info(f"Seeded price history from DB: {seeded} symbols total, {ml_ready} ML-ready (60+ ticks)")
+
+    except Exception as e:
+        logger.warning(f"Could not seed price history from DB: {e}")
+
+
+async def collect_market_data():
+    """Subscribe to Redis tick channels and accumulate price history.
+
+    Automatically reconnects on Redis pubsub failures with exponential backoff.
+    """
+    global price_history
+    backoff = 1
+    max_backoff = 30
+
+    while True:
+        pubsub = None
+        try:
+            pubsub = redis_client.pubsub()
+            channels = [f"ticks:{s.strip().replace('/', '_')}" for s in TRADING_PAIRS]
+            logger.info("Subscribing to tick channels", count=len(channels))
+            await pubsub.subscribe(*channels)
+            backoff = 1  # reset on successful connect
+
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    try:
+                        tick = json.loads(message["data"])
+                        symbol = tick["symbol"]
+                        data_point = {
+                            "timestamp": tick.get("timestamp", datetime.now(timezone.utc).isoformat()),
+                            "open": tick.get("price", 0),
+                            "high": tick.get("price", 0),
+                            "low": tick.get("price", 0),
+                            "close": tick.get("price", 0),
+                            "volume": tick.get("volume", 0),
+                        }
+                        if symbol not in price_history:
+                            price_history[symbol] = []
+                        price_history[symbol].append(data_point)
+                        # Keep last 200 ticks
+                        if len(price_history[symbol]) > 200:
+                            price_history[symbol] = price_history[symbol][-200:]
+                    except Exception as exc:
+                        logger.debug("Tick parse error", error=str(exc))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("Market data pubsub disconnected, reconnecting", error=str(exc), backoff=backoff)
+        finally:
+            if pubsub:
+                try:
+                    await pubsub.unsubscribe()
+                    await pubsub.close()
+                except Exception:
+                    pass
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, max_backoff)
+
+
+async def model_reload_watcher():
+    """Watch for model update signals from the continuous learner and hot-reload.
+
+    Automatically reconnects on Redis pubsub failures with exponential backoff.
+    """
+    backoff = 1
+    max_backoff = 30
+
+    while True:
+        pubsub = None
+        try:
+            pubsub = redis_client.pubsub()
+            await pubsub.subscribe("model:reload")
+            logger.info("Model reload watcher started")
+            backoff = 1
+
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    logger.info("Model reload signal received, reloading models...")
+                    try:
+                        load_models()
+                        mode = "ml" if _ml_mode_available() else "legacy"
+                        logger.info("Models hot-reloaded", mode=mode)
+                    except Exception as exc:
+                        logger.error("Model reload failed", error=str(exc))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("Model reload watcher disconnected, reconnecting", error=str(exc), backoff=backoff)
+        finally:
+            if pubsub:
+                try:
+                    await pubsub.unsubscribe()
+                    await pubsub.close()
+                except Exception:
+                    pass
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, max_backoff)
+
+
+async def prediction_loop():
+    """Batch inference pipeline — runs every INFERENCE_INTERVAL seconds.
+
+    Pipeline:
+      Phase 1 (CPU, thread pool): Prepare features for all symbols in parallel.
+      Phase 2 (GPU, single call): Batched TCN + XGBoost inference.
+      Phase 3 (CPU):              Ensemble combination per symbol.
+      Phase 4 (Redis):            Publish all predictions.
+    """
+    from models.ensemble import _direction_sign
+
+    while True:
+        await asyncio.sleep(INFERENCE_INTERVAL)
+
+        try:
+            cycle_start = time.monotonic()
+            symbols = [s.strip() for s in TRADING_PAIRS]
+
+            # Filter to symbols with enough data
+            eligible = []
+            for sym in symbols:
+                ticks = price_history.get(sym)
+                if ticks and len(ticks) >= 20:
+                    eligible.append(sym)
+
+            if not eligible:
+                logger.debug("No eligible symbols for prediction", total=len(symbols), with_data=len(price_history))
+                continue
+
+            ml_mode = _ml_mode_available()
+
+            # ── Phase 1: Parallel CPU feature preparation ─────────────
+            if ml_mode:
+                logger.debug("Phase 1: preparing features", symbols=len(eligible))
+                prep_futures = []
+                for sym in eligible:
+                    ticks_snapshot = list(price_history[sym])
+                    prep_futures.append(
+                        asyncio.to_thread(_prepare_symbol_features, sym, ticks_snapshot)
+                    )
+                prepared_list = await asyncio.gather(*prep_futures, return_exceptions=True)
+                logger.debug("Phase 1 done", prepared=sum(1 for x in prepared_list if not isinstance(x, Exception) and x is not None))
+
+                # Separate successes from failures
+                prepared = {}
+                for item in prepared_list:
+                    if isinstance(item, Exception) or item is None:
+                        continue
+                    prepared[item["symbol"]] = item
+
+                # Fetch sentiment/onchain features with bounded concurrency and timeout
+                sentiment_map = {}
+                onchain_map = {}
+                ext_sem = asyncio.Semaphore(200)
+
+                async def _fetch_ext(sym):
+                    async with ext_sem:
+                        s, o = await asyncio.gather(
+                            fetch_sentiment_features(sym, redis_client=redis_client, feature_store_url=FEATURE_STORE_URL),
+                            fetch_onchain_features(sym, redis_client=redis_client, feature_store_url=FEATURE_STORE_URL),
+                        )
+                        return sym, s, o
+
+                try:
+                    ext_results = await asyncio.wait_for(
+                        asyncio.gather(
+                            *[_fetch_ext(sym) for sym in prepared.keys()],
+                            return_exceptions=True,
+                        ),
+                        timeout=15.0,  # 15s max for all ext features
+                    )
+                    for r in ext_results:
+                        if isinstance(r, Exception):
+                            continue
+                        sym, s, o = r
+                        sentiment_map[sym] = s
+                        onchain_map[sym] = o
+                except asyncio.TimeoutError:
+                    logger.warning("Ext feature fetch timed out, using defaults")
+
+                await asyncio.sleep(0)  # Yield for health checks
+                logger.debug("Phase 1+ext done")
+
+                # ── Phase 2: Batched GPU inference ────────────────────────
+                # TCN batch
+                tcn_results = {}
+                if tcn_model is not None and tcn_model.is_loaded:
+                    tcn_syms = []
+                    tcn_seqs = []
+                    for sym, prep in prepared.items():
+                        if prep["tcn_sequence"] is not None:
+                            tcn_syms.append(sym)
+                            tcn_seqs.append(prep["tcn_sequence"])
+
+                    if tcn_seqs:
+                        try:
+                            batch_preds = await asyncio.to_thread(tcn_model.predict_batch, tcn_seqs)
+                            for sym, (direction, confidence) in zip(tcn_syms, batch_preds):
+                                tcn_results[sym] = ModelPrediction(direction=direction, confidence=confidence)
+                        except Exception as exc:
+                            logger.warning("TCN batch inference failed", error=str(exc))
+
+                # XGBoost batch
+                xgb_results = {}
+                if xgb_model is not None and xgb_model.is_loaded:
+                    xgb_syms = []
+                    xgb_feat_dicts = []
+                    for sym, prep in prepared.items():
+                        sf = sentiment_map.get(sym, {})
+                        of = onchain_map.get(sym, {})
+                        xgb_feat_dicts.append({**prep["tech_features"], **sf, **of})
+                        xgb_syms.append(sym)
+
+                    if xgb_feat_dicts:
+                        try:
+                            batch_preds = await asyncio.to_thread(xgb_model.predict_batch, xgb_feat_dicts)
+                            for sym, (direction, confidence, probs) in zip(xgb_syms, batch_preds):
+                                xgb_results[sym] = ModelPrediction(direction=direction, confidence=confidence, probabilities=probs)
+                        except Exception as exc:
+                            logger.warning("XGBoost batch inference failed", error=str(exc))
+
+                await asyncio.sleep(0)
+
+                # ── Phase 3: Ensemble combination ─────────────────────────
+                now_ts = datetime.now(timezone.utc).isoformat()
+                for sym, prep in prepared.items():
+                    tcn_pred = tcn_results.get(sym)
+                    xgb_pred = xgb_results.get(sym)
+                    sf = sentiment_map.get(sym, {})
+                    of = onchain_map.get(sym, {})
+
+                    sentiment_score = _safe_float(sf.get("sentiment_score", 0.0))
+                    onchain_vals = [v for v in of.values() if isinstance(v, (int, float))]
+                    onchain_score = float(np.mean(onchain_vals)) if onchain_vals else 0.0
+
+                    result = ensemble.combine(
+                        tcn_pred=tcn_pred, xgb_pred=xgb_pred,
+                        sentiment_score=sentiment_score, onchain_score=onchain_score,
+                    )
+
+                    PREDICTIONS_TOTAL.labels(symbol=sym, direction=result.direction).inc()
+                    MODEL_CONFIDENCE.labels(symbol=sym).set(result.confidence)
+
+                    agreement = 0
+                    if tcn_pred and xgb_pred:
+                        agreement = 1 if _direction_sign(tcn_pred.direction) == _direction_sign(xgb_pred.direction) else 0
+                    ENSEMBLE_AGREEMENT.labels(symbol=sym).set(agreement)
+
+                    latest_predictions[sym] = PredictionResponse(
+                        symbol=sym,
+                        timestamp=now_ts,
+                        direction=result.direction,
+                        confidence=_safe_float(result.confidence, 0.5),
+                        score=_safe_float(result.score, 0.0),
+                        current_price=_safe_float(prep["df"]["close"].iloc[-1], 0.0),
+                        mode="ml",
+                        breakdown={k: _safe_float(v) for k, v in result.breakdown.items()},
+                        tcn_direction=tcn_pred.direction if tcn_pred else None,
+                        tcn_confidence=round(_safe_float(tcn_pred.confidence, 0.5), 4) if tcn_pred else None,
+                        xgb_direction=xgb_pred.direction if xgb_pred else None,
+                        xgb_confidence=round(_safe_float(xgb_pred.confidence, 0.5), 4) if xgb_pred else None,
+                    )
+
+            else:
+                # Legacy fallback for all symbols
+                for sym in eligible:
+                    ticks = list(price_history[sym])
+                    for t in ticks:
+                        t["symbol"] = sym
+                    pred = _legacy_predict(ticks)
+                    if pred is not None:
+                        latest_predictions[sym] = pred
+
+            await asyncio.sleep(0)
+
+            # ── Phase 4: Publish all predictions to Redis ─────────────
+            try:
+                pipe = redis_client.pipeline()
+                for sym, pred in latest_predictions.items():
+                    pipe.publish(f"predictions:{sym.replace('/', '_')}", pred.model_dump_json())
+                await pipe.execute()
+            except Exception as pub_exc:
+                logger.warning("Batch publish failed", error=str(pub_exc))
+
+            elapsed = time.monotonic() - cycle_start
+            PREDICTION_LATENCY.observe(elapsed)
+            logger.info("Prediction cycle complete",
+                         symbols=len(eligible), duration_s=round(elapsed, 2),
+                         mode="ml" if ml_mode else "legacy")
+
+        except Exception as loop_exc:
+            logger.error("Prediction loop iteration failed", error=str(loop_exc), error_type=type(loop_exc).__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +705,13 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting ML Prediction Service")
 
+    # Expand default thread pool for parallel CPU feature preparation
+    from concurrent.futures import ThreadPoolExecutor
+    _workers = int(os.getenv("INFERENCE_WORKERS", "32"))
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=_workers))
+    logger.info("Thread pool configured", workers=_workers)
+
     # Connect to Redis
     redis_client = aioredis.Redis(
         host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True,
@@ -487,16 +733,44 @@ async def lifespan(app: FastAPI):
     else:
         TRADING_PAIRS = [s.strip() for s in os.getenv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT").split(",") if s.strip()]
 
-    # Start background tasks
-    data_task = asyncio.create_task(collect_market_data())
-    pred_task = asyncio.create_task(prediction_loop())
-    reload_task = asyncio.create_task(model_reload_watcher())
+    # Seed price history from DB for immediate ML mode
+    await seed_price_history_from_db()
+
+    # Start background tasks with monitoring
+    bg_tasks: Dict[str, asyncio.Task] = {}
+
+    def _start_task(name: str, coro_fn):
+        task = asyncio.create_task(coro_fn(), name=name)
+        bg_tasks[name] = task
+        return task
+
+    _start_task("collect_market_data", collect_market_data)
+    _start_task("prediction_loop", prediction_loop)
+    _start_task("model_reload_watcher", model_reload_watcher)
+
+    # Monitor tasks: restart any that crash unexpectedly
+    async def _task_monitor():
+        while True:
+            await asyncio.sleep(5)
+            for name, task in list(bg_tasks.items()):
+                if task.done():
+                    exc = task.exception() if not task.cancelled() else None
+                    logger.error("Background task died, restarting", task=name, error=str(exc))
+                    coro_map = {
+                        "collect_market_data": collect_market_data,
+                        "prediction_loop": prediction_loop,
+                        "model_reload_watcher": model_reload_watcher,
+                    }
+                    if name in coro_map:
+                        _start_task(name, coro_map[name])
+
+    monitor_task = asyncio.create_task(_task_monitor(), name="task_monitor")
 
     yield
 
-    data_task.cancel()
-    pred_task.cancel()
-    reload_task.cancel()
+    monitor_task.cancel()
+    for task in bg_tasks.values():
+        task.cancel()
     if redis_client:
         await redis_client.close()
 
@@ -511,10 +785,22 @@ app = FastAPI(title="ML Prediction Service", version="2.0.0", lifespan=lifespan)
 @app.get("/health", response_model=HealthResponse)
 async def health():
     import torch
+
+    # Check if we're actually receiving data (not just "started")
+    symbols_with_data = sum(1 for v in price_history.values() if len(v) >= 20)
+    has_recent_predictions = len(latest_predictions) > 0
+
+    if symbols_with_data == 0 and not has_recent_predictions:
+        status = "degraded"
+    elif symbols_with_data < len(TRADING_PAIRS) * 0.5:
+        status = "degraded"
+    else:
+        status = "healthy"
+
     return HealthResponse(
-        status="healthy",
+        status=status,
         mode="ml" if _ml_mode_available() else "legacy",
-        symbols_active=len(price_history),
+        symbols_active=symbols_with_data,
         device="cuda" if torch.cuda.is_available() else "cpu",
     )
 
@@ -553,7 +839,18 @@ async def metrics():
     return generate_latest()
 
 
+def _sanitize_floats(obj):
+    """Replace NaN/Inf with None so JSON serialization doesn't fail."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
+        return None
+    return obj
+
+
 @app.get("/predictions")
 async def get_all_predictions():
     """Return the latest cached prediction for every active symbol."""
-    return {sym: pred.model_dump() for sym, pred in latest_predictions.items()}
+    return {sym: _sanitize_floats(pred.model_dump()) for sym, pred in latest_predictions.items()}

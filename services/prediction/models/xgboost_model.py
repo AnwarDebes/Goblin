@@ -96,6 +96,43 @@ class XGBoostModel:
 
         return direction, confidence, probabilities
 
+    def predict_batch(self, feature_dicts: list) -> list:
+        """
+        Batched inference — processes all feature dicts in a single XGBoost call.
+
+        Parameters
+        ----------
+        feature_dicts : list of dict
+            Each dict maps feature_name -> float.
+
+        Returns
+        -------
+        list of (direction, confidence, probabilities) tuples
+        """
+        if self.model is None:
+            raise RuntimeError("XGBoost model not loaded. Call load() first.")
+        if not feature_dicts:
+            return []
+
+        mat = np.array(
+            [[fd.get(f, 0.0) for f in self.feature_names] for fd in feature_dicts],
+            dtype=np.float32,
+        )
+        dmat = xgb.DMatrix(mat, feature_names=self.feature_names)
+        all_probs = self.model.predict(dmat)  # (N, n_classes)
+
+        if all_probs.ndim == 1:
+            all_probs = all_probs.reshape(1, -1)
+
+        results = []
+        for probs in all_probs:
+            idx = int(np.argmax(probs))
+            direction = CLASS_LABELS[idx]
+            confidence = float(probs[idx])
+            probabilities = {label: float(probs[i]) for i, label in enumerate(CLASS_LABELS)}
+            results.append((direction, confidence, probabilities))
+        return results
+
     # ------------------------------------------------------------------
     # Feature importance
     # ------------------------------------------------------------------

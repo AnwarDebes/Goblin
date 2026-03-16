@@ -43,15 +43,18 @@ async def fetch_onchain_features(
     """
     url = feature_store_url or FEATURE_STORE_URL
 
-    # Attempt 1: feature-store HTTP
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            resp = await client.get(f"{url}/features/{symbol}")
-            if resp.status_code == 200:
-                data = resp.json()
-                return {k: float(data.get(k, 0.0)) for k in ONCHAIN_KEYS}
-    except Exception:
-        pass
+    # Attempt 1: feature-store HTTP (with retry)
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"{url}/features/{symbol}")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return {k: float(data.get(k, 0.0)) for k in ONCHAIN_KEYS}
+        except Exception:
+            if attempt == 0:
+                import asyncio
+                await asyncio.sleep(0.5)
 
     # Attempt 2: Redis
     if redis_client is not None:

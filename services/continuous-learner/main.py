@@ -51,13 +51,18 @@ MODELS_DIR = Path(os.getenv("MODELS_DIR", "/home/coder/Goblin/shared/models"))
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Training schedule
-TRAIN_INTERVAL_MINUTES = int(os.getenv("TRAIN_INTERVAL_MINUTES", "30"))
+TRAIN_INTERVAL_MINUTES = int(os.getenv("TRAIN_INTERVAL_MINUTES", "10"))
 REWARD_LOOKBACK_CANDLES = 5  # How many candles ahead to check outcome
 MIN_SAMPLES_FOR_TRAINING = 500
 LEARNING_RATE_TCN = 0.0003
 LEARNING_RATE_XGB = 0.03
-TCN_EPOCHS_PER_CYCLE = 5
-XGB_BOOST_ROUNDS_PER_CYCLE = 20
+TCN_EPOCHS_PER_CYCLE = int(os.getenv("TCN_EPOCHS_PER_CYCLE", "20"))
+XGB_BOOST_ROUNDS_PER_CYCLE = int(os.getenv("XGB_BOOST_ROUNDS_PER_CYCLE", "100"))
+TCN_HIDDEN_CHANNELS = int(os.getenv("TCN_HIDDEN_CHANNELS", "128"))
+TCN_BATCH_SIZE = int(os.getenv("TCN_BATCH_SIZE", "256"))
+XGB_MAX_DEPTH = int(os.getenv("XGB_MAX_DEPTH", "8"))
+TRAINING_DAYS = int(os.getenv("TRAINING_DAYS", "90"))
+MAX_TRAINING_SYMBOLS = int(os.getenv("MAX_TRAINING_SYMBOLS", "100"))
 
 # Feature names matching prediction service's features/technical.py
 TECHNICAL_FEATURES = [
@@ -69,10 +74,36 @@ TECHNICAL_FEATURES = [
     "spread_pct", "vwap_deviation",
 ]
 
-DEFAULT_SYMBOLS = [
+_FALLBACK_SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
     "DOGE/USDT", "ADA/USDT", "AVAX/USDT", "DOT/USDT", "LINK/USDT",
 ]
+
+async def _load_symbols_from_db(pool: asyncpg.Pool) -> list:
+    """Load top symbols by candle/tick count from DB. Falls back to hardcoded list."""
+    try:
+        async with pool.acquire() as conn:
+            # Prefer symbols with candle data, sorted by count
+            rows = await conn.fetch(
+                """SELECT symbol, COUNT(*) as cnt FROM candles
+                   GROUP BY symbol ORDER BY cnt DESC LIMIT $1""",
+                MAX_TRAINING_SYMBOLS,
+            )
+            if rows and len(rows) >= 5:
+                return [r["symbol"] for r in rows]
+            # Fallback: derive from ticks (symbols with most data)
+            rows = await conn.fetch(
+                """SELECT symbol, COUNT(*) as cnt FROM ticks
+                   GROUP BY symbol ORDER BY cnt DESC LIMIT $1""",
+                MAX_TRAINING_SYMBOLS,
+            )
+            if rows:
+                return [r["symbol"] for r in rows]
+    except Exception:
+        pass
+    return _FALLBACK_SYMBOLS
+
+DEFAULT_SYMBOLS = _FALLBACK_SYMBOLS  # Updated at runtime in main()
 
 # 5-class labels matching prediction service's xgboost_model.py
 CLASS_5 = ["strong_sell", "sell", "hold", "buy", "strong_buy"]
@@ -393,7 +424,7 @@ def train_tcn_rl(
 
     model = TCNNetwork(
         n_features=n_features,
-        hidden_channels=64,
+        hidden_channels=TCN_HIDDEN_CHANNELS,
         n_classes=3,
         kernel_size=3,
         dropout=0.2,
@@ -403,11 +434,17 @@ def train_tcn_rl(
     if existing_model_path and os.path.isfile(existing_model_path):
         try:
             state = torch.load(existing_model_path, map_location=device, weights_only=True)
-            if "model_state_dict" in state:
-                model.load_state_dict(state["model_state_dict"])
+            # If checkpoint has different hidden_channels, rebuild the network
+            ckpt_hc = state.get("hidden_channels", TCN_HIDDEN_CHANNELS)
+            if ckpt_hc != TCN_HIDDEN_CHANNELS:
+                logger.info("TCN: checkpoint hidden_channels mismatch, training from scratch",
+                            checkpoint=ckpt_hc, configured=TCN_HIDDEN_CHANNELS)
             else:
-                model.load_state_dict(state)
-            logger.info("TCN: loaded existing model for fine-tuning")
+                if "model_state_dict" in state:
+                    model.load_state_dict(state["model_state_dict"])
+                else:
+                    model.load_state_dict(state)
+                logger.info("TCN: loaded existing model for fine-tuning")
         except Exception as e:
             logger.warning("TCN: could not load existing model, training from scratch", error=str(e))
 
@@ -438,7 +475,7 @@ def train_tcn_rl(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss(reduction='none')  # Per-sample loss for RL weighting
-    batch_size = 64
+    batch_size = TCN_BATCH_SIZE
     best_acc = 0.0
 
     for epoch in range(epochs):
@@ -481,7 +518,7 @@ def train_tcn_rl(
             torch.save({
                 "model_state_dict": model.state_dict(),
                 "n_features": n_features,
-                "hidden_channels": 64,
+                "hidden_channels": TCN_HIDDEN_CHANNELS,
                 "n_classes": 3,
             }, output_path / "tcn_latest.pt")
 
@@ -568,9 +605,10 @@ def train_xgboost_rl(
         "objective": "multi:softprob",
         "num_class": 5,
         "eval_metric": "mlogloss",
-        "max_depth": 6,
+        "max_depth": XGB_MAX_DEPTH,
         "learning_rate": lr,
         "tree_method": "hist",
+        "device": "cuda",
         "subsample": 0.8,
         "colsample_bytree": 0.8,
     }
@@ -717,7 +755,7 @@ async def log_to_nerve_monitor(redis: aioredis.Redis, message: str, details: dic
 # ── Main Training Loop ────────────────────────────────────────────────
 
 async def load_candle_data(pool: asyncpg.Pool, symbols: list, days: int) -> pd.DataFrame:
-    """Load candle data from TimescaleDB."""
+    """Load candle data from TimescaleDB. Falls back to deriving from ticks."""
     start_time = datetime.now(timezone.utc) - timedelta(days=days)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -727,6 +765,33 @@ async def load_candle_data(pool: asyncpg.Pool, symbols: list, days: int) -> pd.D
                ORDER BY symbol, time ASC""",
             symbols, start_time,
         )
+
+        # If not enough candle data, derive from ticks
+        candle_symbols = {r["symbol"] for r in rows}
+        missing = [s for s in symbols if s not in candle_symbols]
+        if missing:
+            tick_rows = await conn.fetch(
+                """WITH bucketed AS (
+                    SELECT
+                        time_bucket(INTERVAL '5 minutes', time) AS time,
+                        symbol,
+                        first(price, time) AS open,
+                        max(price) AS high,
+                        min(price) AS low,
+                        last(price, time) AS close,
+                        sum(COALESCE(volume, 0)) AS volume
+                    FROM ticks
+                    WHERE symbol = ANY($1::text[]) AND time >= $2
+                    GROUP BY time_bucket(INTERVAL '5 minutes', time), symbol
+                    HAVING COUNT(*) >= 2
+                )
+                SELECT time, symbol, open, high, low, close, volume
+                FROM bucketed
+                ORDER BY symbol, time ASC""",
+                missing[:50], start_time,  # Limit to 50 to avoid huge queries
+            )
+            rows = list(rows) + list(tick_rows)
+
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame([dict(r) for r in rows])
@@ -741,7 +806,7 @@ async def training_cycle(pool: asyncpg.Pool, redis: aioredis.Redis,
                                 {"cycle": cycle_num})
 
     # Load data
-    candles_df = await load_candle_data(pool, DEFAULT_SYMBOLS, days=30)
+    candles_df = await load_candle_data(pool, DEFAULT_SYMBOLS, days=TRAINING_DAYS)
     if candles_df.empty or len(candles_df) < MIN_SAMPLES_FOR_TRAINING:
         logger.warning("Insufficient candle data for training", count=len(candles_df))
         return
@@ -856,6 +921,8 @@ async def training_cycle(pool: asyncpg.Pool, redis: aioredis.Redis,
 
 
 async def main():
+    global DEFAULT_SYMBOLS
+
     logger.info("Goblin Continuous Learner starting",
                 interval_min=TRAIN_INTERVAL_MINUTES,
                 models_dir=str(MODELS_DIR))
@@ -863,7 +930,7 @@ async def main():
     pool = await asyncpg.create_pool(
         host=POSTGRES_HOST, port=POSTGRES_PORT,
         database=POSTGRES_DB, user=POSTGRES_USER,
-        password=POSTGRES_PASSWORD, min_size=2, max_size=5,
+        password=POSTGRES_PASSWORD, min_size=2, max_size=10,
     )
 
     redis = aioredis.Redis(
@@ -871,6 +938,11 @@ async def main():
         password=REDIS_PASSWORD, decode_responses=True,
     )
     await redis.ping()
+
+    # Load symbols with actual data from DB
+    DEFAULT_SYMBOLS = await _load_symbols_from_db(pool)
+    logger.info("Training symbols loaded", count=len(DEFAULT_SYMBOLS),
+                first_five=DEFAULT_SYMBOLS[:5])
 
     reward_tracker = RewardTracker(redis)
     cycle = 0

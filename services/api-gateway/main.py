@@ -322,15 +322,37 @@ async def get_portfolio_v2():
         total_value = paper.get("total_value", 0) or risk_data.get("total_value", 0)
         cash = paper.get("usdt_balance", 0) or risk_data.get("available_capital", 0)
         positions_value = total_value - cash if total_value > cash else 0
-        daily_pnl = risk_data.get("daily_pnl", 0) or paper.get("pnl", 0)
+        daily_pnl = paper.get("pnl", 0) or risk_data.get("daily_pnl", 0)
+        starting_capital = risk_data.get("starting_capital", 1000.0)
         positions_dict = paper.get("positions", {})
         open_count = len(positions_dict) if positions_dict else portfolio.get("open_positions_count", 0)
+
+        # Merge executor positions into the positions list for complete view
+        pos_service_positions = portfolio.get("positions", {})
+        for sym, exec_pos in positions_dict.items():
+            if sym not in pos_service_positions:
+                pos_service_positions[sym] = {
+                    "symbol": sym,
+                    "side": "long",
+                    "entry_price": exec_pos.get("price", 0),
+                    "current_price": exec_pos.get("price", 0),
+                    "amount": exec_pos.get("amount", 0),
+                    "unrealized_pnl": 0,
+                    "status": "open",
+                }
+        portfolio["positions"] = pos_service_positions
+        portfolio["open_positions_count"] = len(pos_service_positions)
+
+        # Calculate PnL percentage based on starting capital
+        pnl_pct = (daily_pnl / starting_capital * 100) if starting_capital > 0 else 0
 
         portfolio["summary"] = {
             "total_value": total_value,
             "cash_balance": cash,
             "positions_value": positions_value,
             "daily_pnl": daily_pnl,
+            "daily_pnl_pct": round(pnl_pct, 2),
+            "starting_capital": starting_capital,
             "open_positions": open_count,
         }
 
@@ -959,178 +981,220 @@ async def get_logs(container: Optional[str] = None, level: Optional[str] = None,
 
 @app.get("/api/v2/resources")
 async def get_resources():
-    """Get real resource metrics from Docker container stats."""
-    resources = []
+    """Get real resource metrics from supervisor-managed processes using psutil + nvidia-smi."""
 
-    # ── Try real Docker stats first ──────────────────────────────────
-    try:
-        import aiodocker
-        docker = aiodocker.Docker()
+    def _collect_metrics():
+        import psutil
+        import subprocess
+        import time as _time
+
+        resources = []
+
+        # ── Map supervisor program names to service names and PIDs ──
+        svc_pid_map = {}
         try:
-            containers = await docker.containers.list(all=True)
-            # Map container names to our service names
-            name_map = {
-                "mc-market-data": "market_data",
-                "mc-prediction": "prediction",
-                "mc-signal": "signal",
-                "mc-risk": "risk",
-                "mc-executor": "executor",
-                "mc-position": "position",
-                "mc-feature-store": "feature_store",
-                "mc-sentiment-analysis": "sentiment",
-                "mc-trend-analysis": "trend",
-                "mc-portfolio-optimizer": "portfolio_optimizer",
-                "mc-backtesting": "backtesting",
-                "mc-api-gateway": "api_gateway",
-                "mc-dashboard": "dashboard",
-                "mc-redis": "redis",
-                "mc-timescaledb": "timescaledb",
-            }
-
-            async def get_container_stats(container):
-                info = await container.show()
-                names = info.get("Name", "").lstrip("/")
-                service_name = name_map.get(names, names)
-                state = info.get("State", {})
-                status_raw = state.get("Status", "exited").lower()
-                started_at = state.get("StartedAt", "")
-                restart_count_val = info.get("RestartCount", 0)
-
-                # Compute uptime
-                uptime_seconds = 0
-                if started_at and status_raw == "running":
+            result = subprocess.run(
+                ["supervisorctl", "status"], capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.strip().splitlines():
+                parts = line.split()
+                if len(parts) >= 4 and parts[1] == "RUNNING":
+                    raw_name = parts[0].split(":")[-1]
+                    svc_name = raw_name.replace("goblin-", "").replace("-", "_")
+                    pid_str = parts[3].rstrip(",")
                     try:
-                        start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-                        uptime_seconds = int((datetime.now(start.tzinfo) - start).total_seconds())
-                    except Exception:
+                        svc_pid_map[svc_name] = int(pid_str)
+                    except ValueError:
                         pass
-
-                entry = {
-                    "container": service_name,
-                    "status": "running" if status_raw == "running" else "restarting" if status_raw == "restarting" else "stopped",
-                    "cpu_percent": 0.0,
-                    "memory_used_mb": 0.0,
-                    "memory_limit_mb": 512.0,
-                    "memory_percent": 0.0,
-                    "network_rx_mb": 0.0,
-                    "network_tx_mb": 0.0,
-                    "disk_read_mb": 0.0,
-                    "disk_write_mb": 0.0,
-                    "uptime_seconds": uptime_seconds,
-                    "restart_count": restart_count_val,
-                }
-
-                # Get live stats (only for running containers)
-                if status_raw == "running":
-                    try:
-                        stats = await container.stats(stream=False)
-                        if isinstance(stats, list) and len(stats) > 0:
-                            stats = stats[0]
-
-                        # CPU calculation
-                        cpu_stats = stats.get("cpu_stats", {})
-                        precpu_stats = stats.get("precpu_stats", {})
-                        cpu_delta = cpu_stats.get("cpu_usage", {}).get("total_usage", 0) - precpu_stats.get("cpu_usage", {}).get("total_usage", 0)
-                        system_delta = cpu_stats.get("system_cpu_usage", 0) - precpu_stats.get("system_cpu_usage", 0)
-                        num_cpus = cpu_stats.get("online_cpus", len(cpu_stats.get("cpu_usage", {}).get("percpu_usage", [1])))
-                        if system_delta > 0 and cpu_delta > 0:
-                            entry["cpu_percent"] = round((cpu_delta / system_delta) * num_cpus * 100.0, 2)
-
-                        # Memory
-                        mem_stats = stats.get("memory_stats", {})
-                        mem_used = mem_stats.get("usage", 0) - mem_stats.get("stats", {}).get("cache", 0)
-                        mem_limit = mem_stats.get("limit", 0)
-                        entry["memory_used_mb"] = round(max(mem_used, 0) / (1024 * 1024), 1)
-                        entry["memory_limit_mb"] = round(mem_limit / (1024 * 1024), 1) if mem_limit > 0 else 512.0
-                        entry["memory_percent"] = round((mem_used / mem_limit) * 100, 1) if mem_limit > 0 else 0.0
-
-                        # Network
-                        networks = stats.get("networks", {})
-                        total_rx = sum(n.get("rx_bytes", 0) for n in networks.values())
-                        total_tx = sum(n.get("tx_bytes", 0) for n in networks.values())
-                        entry["network_rx_mb"] = round(total_rx / (1024 * 1024), 2)
-                        entry["network_tx_mb"] = round(total_tx / (1024 * 1024), 2)
-
-                        # Disk I/O
-                        blkio = stats.get("blkio_stats", {}).get("io_service_bytes_recursive", []) or []
-                        for io_entry in blkio:
-                            op = io_entry.get("op", "").lower()
-                            if op == "read":
-                                entry["disk_read_mb"] = round(io_entry.get("value", 0) / (1024 * 1024), 2)
-                            elif op == "write":
-                                entry["disk_write_mb"] = round(io_entry.get("value", 0) / (1024 * 1024), 2)
-                    except Exception as e:
-                        logger.debug("Stats fetch failed for container", container=service_name, error=str(e))
-
-                return entry
-
-            # Fetch stats for all containers in parallel
-            tasks = [get_container_stats(c) for c in containers]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for r in results:
-                if isinstance(r, dict):
-                    resources.append(r)
-
-            # Sort: known services first, then alphabetical
-            known_order = list(SERVICES.keys()) + ["api_gateway", "dashboard", "redis", "timescaledb"]
-            resources.sort(key=lambda x: (
-                known_order.index(x["container"]) if x["container"] in known_order else 999,
-                x["container"]
-            ))
-        finally:
-            await docker.close()
-
-        return resources
-    except Exception as e:
-        logger.warning("Docker stats unavailable, falling back to health checks", error=str(e))
-
-    # ── Fallback: health-check based metrics ─────────────────────────
-    for name, url in SERVICES.items():
-        entry = {
-            "container": name,
-            "status": "stopped",
-            "cpu_percent": 0,
-            "memory_used_mb": 0,
-            "memory_limit_mb": 512,
-            "memory_percent": 0,
-            "network_rx_mb": 0,
-            "network_tx_mb": 0,
-            "disk_read_mb": 0,
-            "disk_write_mb": 0,
-            "uptime_seconds": 0,
-            "restart_count": 0,
-        }
-        try:
-            resp = await http_client.get(f"{url}/health", timeout=3.0)
-            if resp.status_code == 200:
-                data = resp.json()
-                entry["status"] = "running"
-                entry["uptime_seconds"] = data.get("uptime", 0)
         except Exception:
-            entry["status"] = "stopped"
-        resources.append(entry)
+            pass
 
-    # Add Redis
-    try:
-        info = await redis_client.info("memory")
-        resources.append({
-            "container": "redis",
-            "status": "running",
-            "cpu_percent": 0,
-            "memory_used_mb": round(info.get("used_memory", 0) / 1024 / 1024, 1),
-            "memory_limit_mb": 512,
-            "memory_percent": round(info.get("used_memory", 0) / (512 * 1024 * 1024) * 100, 1),
-            "network_rx_mb": 0,
-            "network_tx_mb": 0,
-            "disk_read_mb": 0,
-            "disk_write_mb": 0,
-            "uptime_seconds": info.get("uptime_in_seconds", 0),
-            "restart_count": 0,
-        })
-    except Exception:
-        pass
+        # ── System totals ──
+        cpu_count = psutil.cpu_count(logical=True) or 96
+        mem_info = psutil.virtual_memory()
+        total_mem_mb = mem_info.total / (1024 * 1024)
 
-    return resources
+        # ── Prime CPU measurement (first call returns 0, need two samples) ──
+        all_procs = {}
+        for svc_name, pid in svc_pid_map.items():
+            try:
+                proc = psutil.Process(pid)
+                proc.cpu_percent()  # prime
+                children = proc.children(recursive=True)
+                for c in children:
+                    try:
+                        c.cpu_percent()  # prime
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                all_procs[svc_name] = (proc, children)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                all_procs[svc_name] = (None, [])
+
+        _time.sleep(0.3)  # short interval for CPU measurement
+
+        # ── Collect per-process metrics ──
+        for svc_name, pid in svc_pid_map.items():
+            entry = {
+                "container": svc_name,
+                "status": "running",
+                "cpu_percent": 0.0,
+                "memory_used_mb": 0.0,
+                "memory_limit_mb": round(total_mem_mb, 0),
+                "memory_percent": 0.0,
+                "network_rx_mb": 0.0,
+                "network_tx_mb": 0.0,
+                "disk_read_mb": 0.0,
+                "disk_write_mb": 0.0,
+                "uptime_seconds": 0,
+                "restart_count": 0,
+            }
+            try:
+                proc, children = all_procs.get(svc_name, (None, []))
+                if proc is None:
+                    proc = psutil.Process(pid)
+                    children = proc.children(recursive=True)
+
+                # CPU percent (second call gives real value)
+                cpu_pct = proc.cpu_percent()
+                for child in children:
+                    try:
+                        cpu_pct += child.cpu_percent()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                entry["cpu_percent"] = round(cpu_pct, 2)
+
+                # Memory (RSS including children)
+                mem = proc.memory_info()
+                rss = mem.rss
+                for child in children:
+                    try:
+                        rss += child.memory_info().rss
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                rss_mb = rss / (1024 * 1024)
+                entry["memory_used_mb"] = round(rss_mb, 1)
+                entry["memory_percent"] = round((rss / mem_info.total) * 100, 2)
+
+                # I/O counters
+                try:
+                    io = proc.io_counters()
+                    entry["disk_read_mb"] = round(io.read_bytes / (1024 * 1024), 2)
+                    entry["disk_write_mb"] = round(io.write_bytes / (1024 * 1024), 2)
+                except (psutil.AccessDenied, AttributeError):
+                    pass
+
+                # Uptime
+                entry["uptime_seconds"] = int(psutil.time.time() - proc.create_time())
+
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                entry["status"] = "stopped"
+
+            resources.append(entry)
+
+        # ── Add Redis (via psutil, find by port) ──
+        redis_entry = {
+            "container": "redis", "status": "stopped",
+            "cpu_percent": 0, "memory_used_mb": 0, "memory_limit_mb": round(total_mem_mb, 0),
+            "memory_percent": 0, "network_rx_mb": 0, "network_tx_mb": 0,
+            "disk_read_mb": 0, "disk_write_mb": 0, "uptime_seconds": 0, "restart_count": 0,
+        }
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                if "redis-server" in (proc.info.get("name") or ""):
+                    p = psutil.Process(proc.info["pid"])
+                    redis_entry["status"] = "running"
+                    redis_entry["cpu_percent"] = round(p.cpu_percent(interval=0), 2)
+                    redis_entry["memory_used_mb"] = round(p.memory_info().rss / (1024 * 1024), 1)
+                    redis_entry["memory_percent"] = round((p.memory_info().rss / mem_info.total) * 100, 2)
+                    redis_entry["uptime_seconds"] = int(psutil.time.time() - p.create_time())
+                    break
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        resources.append(redis_entry)
+
+        # ── Add TimescaleDB/PostgreSQL ──
+        pg_entry = {
+            "container": "timescaledb", "status": "stopped",
+            "cpu_percent": 0, "memory_used_mb": 0, "memory_limit_mb": round(total_mem_mb, 0),
+            "memory_percent": 0, "network_rx_mb": 0, "network_tx_mb": 0,
+            "disk_read_mb": 0, "disk_write_mb": 0, "uptime_seconds": 0, "restart_count": 0,
+        }
+        pg_total_rss = 0
+        pg_total_cpu = 0.0
+        pg_create_time = None
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                if "postgres" in (proc.info.get("name") or ""):
+                    p = psutil.Process(proc.info["pid"])
+                    pg_total_rss += p.memory_info().rss
+                    pg_total_cpu += p.cpu_percent(interval=0)
+                    ct = p.create_time()
+                    if pg_create_time is None or ct < pg_create_time:
+                        pg_create_time = ct
+                    pg_entry["status"] = "running"
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        if pg_entry["status"] == "running":
+            pg_entry["cpu_percent"] = round(pg_total_cpu, 2)
+            pg_entry["memory_used_mb"] = round(pg_total_rss / (1024 * 1024), 1)
+            pg_entry["memory_percent"] = round((pg_total_rss / mem_info.total) * 100, 2)
+            if pg_create_time:
+                pg_entry["uptime_seconds"] = int(psutil.time.time() - pg_create_time)
+        resources.append(pg_entry)
+
+        # ── GPU metrics ──
+        gpu_entry = None
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                parts = [p.strip() for p in result.stdout.strip().split(",")]
+                if len(parts) >= 7:
+                    gpu_entry = {
+                        "gpu_name": parts[0],
+                        "gpu_memory_total_mb": float(parts[1]),
+                        "gpu_memory_used_mb": float(parts[2]),
+                        "gpu_memory_free_mb": float(parts[3]),
+                        "gpu_utilization_percent": float(parts[4]),
+                        "gpu_temperature_c": float(parts[5]),
+                        "gpu_power_watts": float(parts[6]),
+                    }
+        except Exception:
+            pass
+
+        # ── System summary ──
+        system_summary = {
+            "cpu_count": cpu_count,
+            "cpu_percent_total": round(psutil.cpu_percent(interval=0), 1),
+            "memory_total_mb": round(total_mem_mb, 0),
+            "memory_used_mb": round(mem_info.used / (1024 * 1024), 0),
+            "memory_available_mb": round(mem_info.available / (1024 * 1024), 0),
+            "memory_percent": round(mem_info.percent, 1),
+        }
+        if gpu_entry:
+            system_summary["gpu"] = gpu_entry
+
+        # ── Network I/O totals ──
+        try:
+            net = psutil.net_io_counters()
+            system_summary["network_rx_total_mb"] = round(net.bytes_recv / (1024 * 1024), 1)
+            system_summary["network_tx_total_mb"] = round(net.bytes_sent / (1024 * 1024), 1)
+        except Exception:
+            pass
+
+        # Sort: known services first
+        known_order = list(SERVICES.keys()) + ["learner", "redis", "timescaledb"]
+        resources.sort(key=lambda x: (
+            known_order.index(x["container"]) if x["container"] in known_order else 999,
+            x["container"]
+        ))
+
+        return {"services": resources, "system": system_summary}
+
+    return await asyncio.to_thread(_collect_metrics)
 
 
 # =============================================
