@@ -73,8 +73,45 @@ async def get_active_symbols() -> list[str]:
 
 
 async def compute_all_features():
-    """Background loop: compute features for all active symbols every N seconds."""
+    """Background loop: compute features for all active symbols every N seconds.
+
+    Uses asyncio.gather with a semaphore to parallelize across CPU cores.
+    """
     global latest_features, _last_db_persist
+    sem = asyncio.Semaphore(48)  # Bound concurrency (DB pool is the real limiter)
+
+    async def _process_symbol(symbol: str, should_persist: bool):
+        async with sem:
+            try:
+                start = time.monotonic()
+                features = await compute_combined_features(symbol, redis_client)
+                duration = time.monotonic() - start
+
+                COMPUTE_DURATION.observe(duration)
+                FEATURES_COMPUTED.labels(symbol=symbol).inc()
+
+                features["_symbol"] = symbol
+                features["_computed_at"] = datetime.now(timezone.utc).isoformat()
+                features["_compute_ms"] = round(duration * 1000, 2)
+
+                latest_features[symbol] = features
+
+                await redis_client.set(
+                    f"features:{symbol}",
+                    json.dumps(features),
+                    ex=FEATURE_TTL,
+                )
+
+                if should_persist:
+                    db_features = {
+                        k: v for k, v in features.items()
+                        if not k.startswith("_") and isinstance(v, (int, float))
+                    }
+                    await db.store_features(symbol, db_features)
+
+            except Exception as e:
+                COMPUTE_ERRORS.labels(symbol=symbol).inc()
+                logger.error("Feature computation failed", symbol=symbol, error=str(e))
 
     while True:
         try:
@@ -88,46 +125,11 @@ async def compute_all_features():
             cycle_start = time.monotonic()
             should_persist = (time.monotonic() - _last_db_persist) >= DB_PERSIST_INTERVAL
 
-            for symbol in symbols:
-                try:
-                    start = time.monotonic()
-                    features = await compute_combined_features(symbol, redis_client)
-                    duration = time.monotonic() - start
-
-                    COMPUTE_DURATION.observe(duration)
-                    FEATURES_COMPUTED.labels(symbol=symbol).inc()
-
-                    # Add metadata
-                    features["_symbol"] = symbol
-                    features["_computed_at"] = datetime.now(timezone.utc).isoformat()
-                    features["_compute_ms"] = round(duration * 1000, 2)
-
-                    # Store in memory
-                    latest_features[symbol] = features
-
-                    # Store in Redis with TTL
-                    await redis_client.set(
-                        f"features:{symbol}",
-                        json.dumps(features),
-                        ex=FEATURE_TTL,
-                    )
-
-                    # Periodically persist to TimescaleDB
-                    if should_persist:
-                        # Strip metadata keys for DB storage
-                        db_features = {
-                            k: v for k, v in features.items()
-                            if not k.startswith("_") and isinstance(v, (int, float))
-                        }
-                        await db.store_features(symbol, db_features)
-
-                except Exception as e:
-                    COMPUTE_ERRORS.labels(symbol=symbol).inc()
-                    logger.error(
-                        "Feature computation failed",
-                        symbol=symbol,
-                        error=str(e),
-                    )
+            # Process all symbols in parallel (bounded by semaphore + DB pool)
+            await asyncio.gather(
+                *[_process_symbol(sym, should_persist) for sym in symbols],
+                return_exceptions=True,
+            )
 
             if should_persist:
                 _last_db_persist = time.monotonic()

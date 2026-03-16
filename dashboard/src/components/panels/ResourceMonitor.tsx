@@ -10,10 +10,10 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { getResourceMetrics } from "@/lib/api";
-import type { ResourceMetrics } from "@/lib/api";
+import { getResourceData } from "@/lib/api";
+import type { ResourceMetrics, ResourceData } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Cpu, HardDrive, Wifi, Server } from "lucide-react";
+import { Cpu, HardDrive, Wifi, Server, Zap } from "lucide-react";
 
 /* ── Circular Progress Gauge ─────────────────────────────────────── */
 
@@ -82,56 +82,44 @@ function InlineBar({ value, max, thresholds }: { value: number; max: number; thr
       <div className="h-1.5 flex-1 rounded-full bg-gray-700">
         <div className={cn("h-1.5 rounded-full transition-all", barColor)} style={{ width: `${Math.min(pct, 100)}%` }} />
       </div>
-      <span className="text-xs font-mono text-gray-400 w-12 text-right">{pct.toFixed(0)}%</span>
+      <span className="text-xs font-mono text-gray-400 w-12 text-right">{pct.toFixed(1)}%</span>
     </div>
   );
 }
 
-/* ── Container Expand Mini-Chart ──────────────────────────────────── */
+/* ── GPU Card ─────────────────────────────────────────────────────── */
 
-function MiniChart({ container }: { container: string }) {
-  // Generate 30 mock data points for the expanded row
-  const data = useMemo(
-    () =>
-      Array.from({ length: 30 }, (_, i) => ({
-        time: i,
-        cpu: 5 + Math.random() * 40 + (container === "prediction" ? 30 : 0),
-        memory: 10 + Math.random() * 30 + (container === "prediction" ? 40 : 0),
-      })),
-    [container]
-  );
+function GpuCard({ gpu }: { gpu: NonNullable<ResourceData["system"]["gpu"]> }) {
+  const vramPct = gpu.gpu_memory_total_mb > 0
+    ? (gpu.gpu_memory_used_mb / gpu.gpu_memory_total_mb) * 100
+    : 0;
 
   return (
-    <div className="grid grid-cols-2 gap-4 p-4 bg-gray-950/50 rounded-lg">
-      <div>
-        <p className="text-xs text-gray-500 mb-2">CPU Usage (last 30 readings)</p>
-        <ResponsiveContainer width="100%" height={80}>
-          <AreaChart data={data}>
-            <Area type="monotone" dataKey="cpu" stroke="#22c55e" fill="rgba(34,197,94,0.1)" strokeWidth={1.5} />
-            <XAxis hide />
-            <YAxis hide domain={[0, 100]} />
-            <Tooltip
-              contentStyle={{ background: "#111827", border: "1px solid #1f2937", borderRadius: 8, fontSize: 11 }}
-              labelStyle={{ display: "none" }}
-              formatter={(v: number) => [`${v.toFixed(1)}%`, "CPU"]}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
+    <div className="card">
+      <div className="flex items-center gap-2 mb-3">
+        <Zap size={16} className="text-goblin-500" />
+        <h3 className="section-title mb-0">GPU</h3>
       </div>
-      <div>
-        <p className="text-xs text-gray-500 mb-2">Memory Usage (last 30 readings)</p>
-        <ResponsiveContainer width="100%" height={80}>
-          <AreaChart data={data}>
-            <Area type="monotone" dataKey="memory" stroke="#f59e0b" fill="rgba(245,158,11,0.1)" strokeWidth={1.5} />
-            <XAxis hide />
-            <YAxis hide domain={[0, 100]} />
-            <Tooltip
-              contentStyle={{ background: "#111827", border: "1px solid #1f2937", borderRadius: 8, fontSize: 11 }}
-              labelStyle={{ display: "none" }}
-              formatter={(v: number) => [`${v.toFixed(1)}%`, "Memory"]}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
+      <p className="text-xs text-gray-500 mb-3">{gpu.gpu_name}</p>
+      <div className="grid grid-cols-3 gap-4 text-center">
+        <div>
+          <p className="text-lg font-bold text-white">{gpu.gpu_utilization_percent}%</p>
+          <p className="text-xs text-gray-500">Compute</p>
+        </div>
+        <div>
+          <p className="text-lg font-bold text-white">{(gpu.gpu_memory_used_mb / 1024).toFixed(1)} GB</p>
+          <p className="text-xs text-gray-500">VRAM ({vramPct.toFixed(0)}%)</p>
+        </div>
+        <div>
+          <p className="text-lg font-bold text-white">{gpu.gpu_temperature_c}&deg;C</p>
+          <p className="text-xs text-gray-500">{gpu.gpu_power_watts.toFixed(0)}W</p>
+        </div>
+      </div>
+      <div className="mt-3">
+        <InlineBar value={gpu.gpu_memory_used_mb} max={gpu.gpu_memory_total_mb} thresholds={{ yellow: 70, red: 90 }} />
+        <span className="text-[10px] text-gray-500 mt-1 block">
+          VRAM: {(gpu.gpu_memory_used_mb / 1024).toFixed(1)} / {(gpu.gpu_memory_total_mb / 1024).toFixed(0)} GB
+        </span>
       </div>
     </div>
   );
@@ -145,17 +133,17 @@ const PALETTE = [
   "#ec4899", "#6366f1", "#84cc16", "#0ea5e9", "#6b7280",
 ];
 
-function MemoryAllocationBar({ metrics }: { metrics: ResourceMetrics[] }) {
-  const totalMemory = 24 * 1024; // 24GB in MB
+function MemoryAllocationBar({ metrics, totalMemoryMb }: { metrics: ResourceMetrics[]; totalMemoryMb: number }) {
   const [hovered, setHovered] = useState<string | null>(null);
+  const totalGB = (totalMemoryMb / 1024).toFixed(0);
 
   return (
     <div className="card">
-      <h3 className="section-title mb-3">Memory Allocation (24 GB Total)</h3>
+      <h3 className="section-title mb-3">Memory Allocation ({totalGB} GB Total)</h3>
       <div className="relative h-8 rounded-full bg-gray-800 overflow-hidden flex">
         {metrics.map((m, i) => {
-          const width = (m.memory_used_mb / totalMemory) * 100;
-          if (width < 0.1) return null;
+          const width = (m.memory_used_mb / totalMemoryMb) * 100;
+          if (width < 0.05) return null;
           return (
             <div
               key={m.container}
@@ -166,7 +154,10 @@ function MemoryAllocationBar({ metrics }: { metrics: ResourceMetrics[] }) {
             >
               {hovered === m.container && (
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 whitespace-nowrap rounded bg-gray-900 border border-gray-700 px-2 py-1 text-xs text-white z-10">
-                  {m.container}: {m.memory_used_mb.toFixed(0)} MB ({((m.memory_used_mb / totalMemory) * 100).toFixed(1)}%)
+                  {m.container}: {m.memory_used_mb >= 1024
+                    ? `${(m.memory_used_mb / 1024).toFixed(1)} GB`
+                    : `${m.memory_used_mb.toFixed(0)} MB`
+                  } ({((m.memory_used_mb / totalMemoryMb) * 100).toFixed(1)}%)
                 </div>
               )}
             </div>
@@ -174,12 +165,14 @@ function MemoryAllocationBar({ metrics }: { metrics: ResourceMetrics[] }) {
         })}
       </div>
       <div className="flex flex-wrap gap-2 mt-3">
-        {metrics.map((m, i) => (
-          <div key={m.container} className="flex items-center gap-1 text-[10px] text-gray-400">
-            <div className="h-2 w-2 rounded-full" style={{ backgroundColor: PALETTE[i % PALETTE.length] }} />
-            {m.container}
-          </div>
-        ))}
+        {metrics
+          .filter((m) => m.memory_used_mb > 10)
+          .map((m, i) => (
+            <div key={m.container} className="flex items-center gap-1 text-[10px] text-gray-400">
+              <div className="h-2 w-2 rounded-full" style={{ backgroundColor: PALETTE[metrics.indexOf(m) % PALETTE.length] }} />
+              {m.container} ({m.memory_used_mb >= 1024 ? `${(m.memory_used_mb / 1024).toFixed(1)}G` : `${m.memory_used_mb.toFixed(0)}M`})
+            </div>
+          ))}
       </div>
     </div>
   );
@@ -194,22 +187,29 @@ function formatUptime(seconds: number): string {
   return `${h}h ${m}m`;
 }
 
+function formatMemory(mb: number): string {
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${mb.toFixed(0)} MB`;
+}
+
 export default function ResourceMonitor() {
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<keyof ResourceMetrics>("container");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [sortBy, setSortBy] = useState<keyof ResourceMetrics>("memory_used_mb");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  const { data: metrics = [] } = useQuery({
-    queryKey: ["resource-metrics"],
-    queryFn: getResourceMetrics,
+  const { data } = useQuery({
+    queryKey: ["resource-data"],
+    queryFn: getResourceData,
     refetchInterval: 10000,
   });
 
+  const metrics = data?.services ?? [];
+  const sys = data?.system;
+
+  const totalCpuMax = (sys?.cpu_count ?? 96) * 100;
   const totalCpu = metrics.reduce((sum, m) => sum + m.cpu_percent, 0);
-  const totalMemUsed = metrics.reduce((sum, m) => sum + m.memory_used_mb, 0);
-  const totalMemLimit = 24 * 1024; // 24GB
-  const totalNetRx = metrics.reduce((sum, m) => sum + m.network_rx_mb, 0);
-  const totalNetTx = metrics.reduce((sum, m) => sum + m.network_tx_mb, 0);
+  const totalMemMb = sys?.memory_total_mb ?? 24 * 1024;
+  const usedMemMb = sys?.memory_used_mb ?? metrics.reduce((sum, m) => sum + m.memory_used_mb, 0);
   const runningCount = metrics.filter((m) => m.status === "running").length;
 
   const sorted = useMemo(() => {
@@ -224,51 +224,70 @@ export default function ResourceMonitor() {
 
   const handleSort = (col: keyof ResourceMetrics) => {
     if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else { setSortBy(col); setSortDir("asc"); }
+    else { setSortBy(col); setSortDir("desc"); }
   };
 
   return (
     <div className="space-y-6">
       {/* Overview Cards */}
-      <div className="grid grid-cols-2 gap-2 sm:gap-4 lg:grid-cols-4">
+      <div className={cn("grid gap-2 sm:gap-4", sys?.gpu ? "grid-cols-2 lg:grid-cols-5" : "grid-cols-2 lg:grid-cols-4")}>
         <CircularGauge
-          value={totalCpu} max={metrics.length * 100}
-          label="Total CPU" subLabel={`${totalCpu.toFixed(1)}% of ${metrics.length * 100}%`}
+          value={sys?.cpu_percent_total ?? totalCpu / (sys?.cpu_count ?? 1)}
+          max={100}
+          label="Total CPU"
+          subLabel={`${sys?.cpu_count ?? 96} cores`}
           icon={Cpu} thresholds={{ yellow: 70, red: 85 }}
         />
         <CircularGauge
-          value={totalMemUsed} max={totalMemLimit}
-          label="Total Memory" subLabel={`${(totalMemUsed / 1024).toFixed(1)} / ${(totalMemLimit / 1024).toFixed(0)} GB`}
+          value={usedMemMb} max={totalMemMb}
+          label="Total Memory"
+          subLabel={`${formatMemory(usedMemMb)} / ${formatMemory(totalMemMb)}`}
           icon={HardDrive} thresholds={{ yellow: 70, red: 85 }}
         />
+        {sys?.gpu && (
+          <CircularGauge
+            value={sys.gpu.gpu_memory_used_mb} max={sys.gpu.gpu_memory_total_mb}
+            label="GPU VRAM"
+            subLabel={`${(sys.gpu.gpu_memory_used_mb / 1024).toFixed(1)} / ${(sys.gpu.gpu_memory_total_mb / 1024).toFixed(0)} GB`}
+            icon={Zap} thresholds={{ yellow: 70, red: 90 }}
+          />
+        )}
         <div className="card-hover flex flex-col items-center justify-center gap-2 py-4">
           <Wifi size={20} className="text-goblin-500" />
-          <p className="text-lg font-bold text-white">{(totalNetRx + totalNetTx).toFixed(1)} MB/s</p>
+          <p className="text-lg font-bold text-white">
+            {sys?.network_rx_total_mb
+              ? `${((sys.network_rx_total_mb + (sys.network_tx_total_mb ?? 0)) / 1024).toFixed(0)} GB`
+              : "0 MB"}
+          </p>
           <p className="text-sm font-medium text-white">Network I/O</p>
-          <p className="text-xs text-gray-500">RX: {totalNetRx.toFixed(1)} / TX: {totalNetTx.toFixed(1)}</p>
+          <p className="text-xs text-gray-500">
+            RX: {sys?.network_rx_total_mb ? formatMemory(sys.network_rx_total_mb) : "0"} / TX: {sys?.network_tx_total_mb ? formatMemory(sys.network_tx_total_mb) : "0"}
+          </p>
         </div>
         <div className="card-hover flex flex-col items-center justify-center gap-2 py-4">
           <Server size={20} className="text-goblin-500" />
           <p className="text-lg font-bold text-white">{runningCount} / {metrics.length}</p>
-          <p className="text-sm font-medium text-white">Active Containers</p>
+          <p className="text-sm font-medium text-white">Active Services</p>
           <p className="text-xs text-gray-500">{metrics.length - runningCount} stopped</p>
         </div>
       </div>
 
-      {/* Container Resource Table */}
+      {/* GPU Card */}
+      {sys?.gpu && <GpuCard gpu={sys.gpu} />}
+
+      {/* Service Resource Table */}
       <div className="card overflow-x-auto -mx-3 sm:mx-0 rounded-none sm:rounded-xl border-x-0 sm:border-x">
-        <h3 className="section-title mb-3">Container Resources</h3>
+        <h3 className="section-title mb-3">Service Resources</h3>
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-gray-800 text-left text-xs text-gray-500">
               {[
-                { key: "container", label: "Container" },
+                { key: "container", label: "Service" },
                 { key: "status", label: "Status" },
                 { key: "cpu_percent", label: "CPU %" },
-                { key: "memory_percent", label: "Memory" },
-                { key: "network_rx_mb", label: "Network I/O" },
+                { key: "memory_used_mb", label: "Memory" },
+                { key: "disk_read_mb", label: "Disk I/O" },
                 { key: "uptime_seconds", label: "Uptime" },
-                { key: "restart_count", label: "Restarts" },
               ].map(({ key, label }) => (
                 <th
                   key={key}
@@ -302,24 +321,13 @@ export default function ResourceMonitor() {
                     <InlineBar value={m.cpu_percent} max={100} thresholds={{ yellow: 60, red: 85 }} />
                   </td>
                   <td className="py-2 pr-4">
-                    <InlineBar value={m.memory_used_mb} max={m.memory_limit_mb || 512} thresholds={{ yellow: 70, red: 85 }} />
-                    <span className="text-[10px] text-gray-500 mt-0.5 block">
-                      {(m.memory_used_mb || 0).toFixed(0)} / {(m.memory_limit_mb || 512).toFixed(0)} MB
-                    </span>
+                    <span className="text-xs text-gray-300 font-mono">{formatMemory(m.memory_used_mb)}</span>
                   </td>
                   <td className="py-2 pr-4 text-gray-400 font-mono text-xs">
-                    {(m.network_rx_mb || 0).toFixed(1)} / {(m.network_tx_mb || 0).toFixed(1)}
+                    R: {formatMemory(m.disk_read_mb)} / W: {formatMemory(m.disk_write_mb)}
                   </td>
                   <td className="py-2 pr-4 text-gray-400">{formatUptime(m.uptime_seconds || 0)}</td>
-                  <td className="py-2 pr-4 text-gray-400">{m.restart_count || 0}</td>
                 </tr>
-                {expandedRow === m.container && (
-                  <tr>
-                    <td colSpan={7} className="px-2 py-2">
-                      <MiniChart container={m.container} />
-                    </td>
-                  </tr>
-                )}
               </React.Fragment>
             ))}
           </tbody>
@@ -327,7 +335,7 @@ export default function ResourceMonitor() {
       </div>
 
       {/* Memory Allocation Bar */}
-      <MemoryAllocationBar metrics={metrics} />
+      <MemoryAllocationBar metrics={metrics} totalMemoryMb={totalMemMb} />
     </div>
   );
 }

@@ -111,12 +111,21 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
         SIGNALS_SKIPPED.labels(reason="hold_signal").inc()
         return None
 
+    # Normalize direction: strong_buy → buy, strong_sell → sell
+    if direction in ("strong_buy", "buy"):
+        normalized_direction = "buy"
+    elif direction in ("strong_sell", "sell"):
+        normalized_direction = "sell"
+    else:
+        SIGNALS_SKIPPED.labels(reason="unknown_direction").inc()
+        return None
+
     has_position = symbol in current_positions
 
     # Only buy if we don't have a position, only sell if we have one
-    if direction == "buy" and not has_position:
+    if normalized_direction == "buy" and not has_position:
         action = "buy"
-    elif direction == "sell" and has_position:
+    elif normalized_direction == "sell" and has_position:
         action = "sell"
     else:
         SIGNALS_SKIPPED.labels(reason="no_action").inc()
@@ -143,19 +152,26 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
             available = json.loads(portfolio).get("available_capital", STARTING_CAPITAL) if portfolio else STARTING_CAPITAL
             logger.info(f"Using Redis balance: ${available:.2f}")
 
-        # MINIMUM $1.50 TRADE LIMIT - Increased buffer above MEXC $1 USDT minimum
-        MIN_TRADE_VALUE = 1.5
+        # Minimum trade threshold
+        MIN_TRADE_VALUE = 5.0  # $5 minimum per trade
         if available < MIN_TRADE_VALUE:
-            logger.info(f"Insufficient USDT balance for ${MIN_TRADE_VALUE} trade, skipping buy signal", balance=available)
+            logger.info(f"Insufficient balance for trade", balance=available)
             SIGNALS_SKIPPED.labels(reason="insufficient_balance").inc()
             return None
 
-        # Use minimum trade value (can be increased for better execution, but never below $1.50)
-        trade_value = MIN_TRADE_VALUE  # Minimum $1.50 per trade
+        # Let confidence and direction strength determine trade size
+        # Base allocation: 2-10% of available capital, scaled by confidence
+        if direction in ("strong_buy", "strong_sell"):
+            base_pct = 0.08  # 8% for strong signals
+        else:
+            base_pct = 0.04  # 4% for normal signals
 
-        # For MEXC market buy orders, send the USDT cost amount directly
-        amount = trade_value  # Send minimum $1.50, not coin quantity
-        logger.info("Calculating trade", symbol=symbol, available=available, trade_value=trade_value, amount=amount, price=current_price)
+        trade_value = available * base_pct * confidence
+        trade_value = max(MIN_TRADE_VALUE, min(trade_value, available * 0.15))  # Floor $5, cap 15% of balance
+
+        amount = trade_value  # USDT value for the trade
+        logger.info("AI-sized trade", symbol=symbol, available=available,
+                    confidence=confidence, direction=direction, trade_value=trade_value)
     else:
         amount = current_positions[symbol].amount
 

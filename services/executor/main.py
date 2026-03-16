@@ -155,7 +155,9 @@ async def execute_paper_order(request: OrderRequest) -> OrderResponse:
         portfolio_state = {
             "available_capital": summary.get("usdt_balance", 0),
             "total_capital": summary.get("total_value", 0),
+            "starting_capital": STARTING_CAPITAL,
             "daily_pnl": summary.get("pnl", 0),
+            "open_positions": len(summary.get("positions", {})),
             "last_trade_time": datetime.utcnow().isoformat(),
         }
         await redis_client.set("portfolio_state", json.dumps(portfolio_state))
@@ -422,6 +424,33 @@ async def lifespan(app: FastAPI):
         await sync_portfolio_balance()
 
     listener_task = asyncio.create_task(listen_for_signals())
+
+    # Periodic portfolio sync for paper mode (keeps Redis state consistent)
+    async def periodic_portfolio_sync():
+        while True:
+            await asyncio.sleep(10)
+            if paper_executor:
+                try:
+                    summary = await paper_executor.get_portfolio_summary()
+                    ps = {
+                        "available_capital": summary.get("usdt_balance", 0),
+                        "total_capital": summary.get("total_value", 0),
+                        "starting_capital": STARTING_CAPITAL,
+                        "daily_pnl": summary.get("pnl", 0),
+                        "open_positions": len(summary.get("positions", {})),
+                    }
+                    # Preserve last_trade_time from existing state
+                    existing = await redis_client.get("portfolio_state")
+                    if existing:
+                        old = json.loads(existing)
+                        ps["last_trade_time"] = old.get("last_trade_time")
+                    await redis_client.set("portfolio_state", json.dumps(ps))
+                except Exception:
+                    pass
+
+    if PAPER_MODE:
+        sync_task = asyncio.create_task(periodic_portfolio_sync())
+
     logger.info("Executor ready", mode=mode)
 
     yield

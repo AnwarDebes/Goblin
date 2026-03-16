@@ -19,9 +19,10 @@ from prometheus_client import Gauge, generate_latest
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", 0.002))  # 0.2% profit target
-MAX_TRADE_LOSS_PCT = float(os.getenv("MAX_TRADE_LOSS_PCT", 0.005))  # 0.5% stop loss
-MAX_HOLD_TIME_MINUTES = float(os.getenv("MAX_HOLD_TIME_MINUTES", 0.25))  # 15 seconds max hold
+PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", 0.03))  # 3% profit target (safety net - AI decides primary exits)
+MAX_TRADE_LOSS_PCT = float(os.getenv("MAX_TRADE_LOSS_PCT", 0.05))  # 5% stop loss (safety net only)
+MAX_HOLD_TIME_MINUTES = float(os.getenv("MAX_HOLD_TIME_MINUTES", 120))  # 2 hours max hold
+AI_EXIT_CONFIDENCE = float(os.getenv("AI_EXIT_CONFIDENCE", 0.20))  # Min confidence for AI-driven exit
 
 logger = structlog.get_logger()
 
@@ -46,7 +47,7 @@ class Position(BaseModel):
     # Trailing stop-loss fields
     trailing_stop_activated: bool = False
     highest_price: Optional[float] = None  # Track highest price for trailing stop
-    trailing_stop_distance_pct: float = 0.003  # 0.3% trailing distance
+    trailing_stop_distance_pct: float = 0.01  # 1% trailing distance
 
 
 # Global State
@@ -65,8 +66,8 @@ async def handle_filled_order(order: dict):
         logger.warning("Order has no filled amount, skipping", symbol=symbol, order_id=order.get("order_id"))
         return
 
-    # Check if we have an existing open position
-    if symbol in positions and positions[symbol].status == "open":
+    # Check if we have an existing open or closing position
+    if symbol in positions and positions[symbol].status in ("open", "closing"):
         pos = positions[symbol]
         # If closing position (sell when long, buy when short)
         if (pos.side == "long" and order["side"] == "sell") or (pos.side == "short" and order["side"] == "buy"):
@@ -189,13 +190,14 @@ async def update_portfolio_state():
                 open_positions_count += 1
                 # Position value is already included in total_value calculation
         
-        # Update portfolio state
+        # Update portfolio state (preserve existing last_trade_time)
+        existing_last_trade = portfolio.get("last_trade_time") if portfolio_state else None
         new_portfolio_state = {
             "total_capital": total_value if total_value > 0 else available_capital,
             "available_capital": available_capital,
             "daily_pnl": sum(p.realized_pnl for p in positions.values()),
             "open_positions": open_positions_count,
-            "last_trade_time": datetime.utcnow().isoformat()
+            "last_trade_time": existing_last_trade,
         }
         
         await redis_client.set("portfolio_state", json.dumps(new_portfolio_state))
@@ -334,7 +336,7 @@ async def update_prices():
                 # Activate trailing stop after 0.5% profit (research-backed threshold)
                 profit_pct = ((pos.current_price - pos.entry_price) / pos.entry_price) if pos.side == "long" else ((pos.entry_price - pos.current_price) / pos.entry_price)
 
-                if not pos.trailing_stop_activated and profit_pct >= 0.005:  # 0.5% profit threshold
+                if not pos.trailing_stop_activated and profit_pct >= 0.01:  # 1% profit threshold
                     pos.trailing_stop_activated = True
                     pos.highest_price = pos.current_price
                     logger.info("✨ Trailing stop-loss ACTIVATED", symbol=symbol, profit_pct=f"{profit_pct:.2%}", current_price=pos.current_price)
@@ -400,9 +402,6 @@ async def update_prices():
         # Close positions that triggered exit conditions
         for symbol, reason in positions_to_close:
             await close_position(symbol, reason)
-        
-        # Update portfolio state after price updates
-        await update_portfolio_state()
 
 
 async def load_positions():
@@ -445,6 +444,64 @@ async def load_positions():
                        max_hold_minutes=pos.max_hold_time_minutes, entry_price=pos.entry_price)
 
 
+async def listen_for_prediction_exits():
+    """AI-driven exits: listen to predictions and close positions when model says sell."""
+    pubsub = redis_client.pubsub()
+    await pubsub.psubscribe("predictions:*")
+    logger.info("AI exit listener subscribed to predictions:*")
+
+    async for message in pubsub.listen():
+        if message["type"] != "pmessage":
+            continue
+        try:
+            prediction = json.loads(message["data"])
+            symbol = prediction.get("symbol")
+            direction = prediction.get("direction", "hold")
+            confidence = float(prediction.get("confidence", 0))
+
+            # Only act on sell/strong_sell for symbols we hold
+            if direction not in ("sell", "strong_sell"):
+                continue
+            if symbol not in positions or positions[symbol].status != "open":
+                continue
+            if confidence < AI_EXIT_CONFIDENCE:
+                continue
+
+            pos = positions[symbol]
+            # Calculate current P&L
+            if pos.entry_price > 0:
+                pnl_pct = (pos.current_price - pos.entry_price) / pos.entry_price if pos.side == "long" else (pos.entry_price - pos.current_price) / pos.entry_price
+            else:
+                pnl_pct = 0
+
+            # AI exit decision: close if model is confident about reversal
+            # Stronger sell signals need less P&L confirmation
+            should_exit = False
+            reason = ""
+
+            if direction == "strong_sell" and confidence >= 0.6:
+                should_exit = True
+                reason = "ai_strong_sell"
+            elif direction == "strong_sell" and confidence >= 0.3 and pnl_pct < 0:
+                should_exit = True
+                reason = "ai_strong_sell_losing"
+            elif direction == "sell" and confidence >= 0.3 and pnl_pct < -0.005:
+                should_exit = True
+                reason = "ai_sell_losing"
+            elif direction == "sell" and confidence >= 0.5 and pnl_pct > 0.005:
+                should_exit = True
+                reason = "ai_sell_take_profit"
+
+            if should_exit:
+                logger.info("AI prediction-driven exit",
+                            symbol=symbol, direction=direction, confidence=confidence,
+                            pnl_pct=f"{pnl_pct:.4%}", reason=reason)
+                await close_position(symbol, reason)
+
+        except Exception as e:
+            logger.error("Error in AI exit listener", error=str(e))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis_client
@@ -481,11 +538,13 @@ async def lifespan(app: FastAPI):
 
     order_task = asyncio.create_task(listen_for_orders())
     price_task = asyncio.create_task(update_prices())
+    ai_exit_task = asyncio.create_task(listen_for_prediction_exits())
 
     yield
 
     order_task.cancel()
     price_task.cancel()
+    ai_exit_task.cancel()
     if redis_client:
         await redis_client.close()
 

@@ -13,7 +13,7 @@ logger = structlog.get_logger()
 
 # Caps
 MAX_POSITION_PCT = float(os.getenv("PORTFOLIO_MAX_POSITION_PCT", 0.05))
-MIN_POSITION_USD = 10.0
+MIN_POSITION_USD = 5.0
 
 
 def calculate_kelly_fraction(win_rate: float, avg_win: float, avg_loss: float) -> float:
@@ -105,6 +105,11 @@ def dynamic_kelly(
     # 2. Scale by model confidence (0..1)
     conf = max(0.0, min(1.0, confidence))
     sized = base * conf
+
+    # Fallback: when no trade history, use confidence-based allocation
+    if sized == 0.0 and conf > 0:
+        sized = 0.02 * conf  # Up to 2% of portfolio, scaled by confidence
+        logger.debug("No trade history, using confidence-based fallback", symbol=symbol, fallback_fraction=round(sized, 5))
 
     # 3. Drawdown adjustment
     sized *= _drawdown_multiplier(current_drawdown)

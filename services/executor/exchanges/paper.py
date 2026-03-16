@@ -187,7 +187,7 @@ class PaperExecutor(ExchangeExecutor):
         total_value = self._balances.get("USDT", {}).get("total", 0)
         positions = {}
 
-        for currency, bal in self._balances.items():
+        for currency, bal in dict(self._balances).items():
             if currency == "USDT" or bal["total"] <= 0:
                 continue
             symbol = f"{currency}/USDT"
