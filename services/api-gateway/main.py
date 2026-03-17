@@ -627,10 +627,13 @@ async def get_system_health():
     for name, url in SERVICES.items():
         entry = {"name": name, "url": url, "status": "unknown", "uptime": None, "last_heartbeat": None}
         try:
-            response = await http_client.get(f"{url}/health", timeout=3.0)
+            response = await http_client.get(f"{url}/health", timeout=5.0)
             if response.status_code == 200:
                 data = response.json()
-                entry["status"] = "healthy"
+                # Respect the service's own reported status (e.g. "degraded")
+                # instead of always marking 200 as healthy.
+                reported = data.get("status", "healthy") if isinstance(data, dict) else "healthy"
+                entry["status"] = reported if reported in ("healthy", "degraded") else "healthy"
                 entry["data"] = data
                 entry["last_heartbeat"] = datetime.utcnow().isoformat()
             else:
