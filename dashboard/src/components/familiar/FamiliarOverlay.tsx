@@ -36,7 +36,7 @@ export default function FamiliarOverlay() {
       <FamiliarEvolutionAnimation />
 
       {/* Floating familiar bubble — offset on mobile to avoid GoblinChat button */}
-      <div className="fixed bottom-20 sm:bottom-4 right-4 z-50 flex flex-col items-end gap-2">
+      <div className="fixed bottom-20 right-4 z-50 flex flex-col items-end gap-2">
         {/* Expanded panel */}
         {isExpanded && (
           <div className="w-[calc(100vw-2rem)] sm:w-80 max-w-80 bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-xl shadow-2xl animate-slide-up overflow-hidden max-h-[60vh] sm:max-h-none overflow-y-auto">

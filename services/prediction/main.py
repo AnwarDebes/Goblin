@@ -782,17 +782,30 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ML Prediction Service", version="2.0.0", lifespan=lifespan)
 
 
+_cached_device: Optional[str] = None
+
+
+def _get_device() -> str:
+    """Cache the device string once — torch.cuda.is_available() is expensive."""
+    global _cached_device
+    if _cached_device is None:
+        try:
+            import torch
+            _cached_device = "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            _cached_device = "cpu"
+    return _cached_device
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health():
-    import torch
-
-    # Check if we're actually receiving data (not just "started")
     symbols_with_data = sum(1 for v in price_history.values() if len(v) >= 20)
     has_recent_predictions = len(latest_predictions) > 0
 
+    # A service that has produced predictions is fundamentally working —
+    # only report "degraded" if we've never generated any predictions AND
+    # have no data at all.  Transient tick gaps should not flip status.
     if symbols_with_data == 0 and not has_recent_predictions:
-        status = "degraded"
-    elif symbols_with_data < len(TRADING_PAIRS) * 0.5:
         status = "degraded"
     else:
         status = "healthy"
@@ -801,7 +814,7 @@ async def health():
         status=status,
         mode="ml" if _ml_mode_available() else "legacy",
         symbols_active=symbols_with_data,
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        device=_get_device(),
     )
 
 
