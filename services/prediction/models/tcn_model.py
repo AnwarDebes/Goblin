@@ -70,39 +70,51 @@ class TCNBlock(nn.Module):
 
 class TCNNetwork(nn.Module):
     """
-    3-block TCN with global average pooling and a 2-layer classification head.
+    Deep TCN with multi-scale dilations, attention pooling, and 3-layer classification head.
+
+    Scaled for V100 GPU with 32GB VRAM. Uses 6 TCN blocks with dilations
+    up to 32 (receptive field = 189 timesteps at kernel_size=3).
 
     Parameters
     ----------
     n_features : int
         Number of input features per timestep.
     hidden_channels : int
-        Channel width of every TCN block (default 64).
+        Channel width of every TCN block (default 256 for V100).
     n_classes : int
         Number of output classes (default 3: up, down, neutral).
     kernel_size : int
         Convolution kernel size (default 3).
     dropout : float
-        Dropout rate inside TCN blocks (default 0.2).
+        Dropout rate inside TCN blocks (default 0.15).
     """
 
     def __init__(
         self,
         n_features: int,
-        hidden_channels: int = 64,
+        hidden_channels: int = 256,
         n_classes: int = 3,
         kernel_size: int = 3,
-        dropout: float = 0.2,
+        dropout: float = 0.15,
     ):
         super().__init__()
+        # 6-block architecture: dilations 1,2,4,8,16,32 for massive receptive field
         self.blocks = nn.Sequential(
             TCNBlock(n_features, hidden_channels, kernel_size, dilation=1, dropout=dropout),
             TCNBlock(hidden_channels, hidden_channels, kernel_size, dilation=2, dropout=dropout),
             TCNBlock(hidden_channels, hidden_channels, kernel_size, dilation=4, dropout=dropout),
+            TCNBlock(hidden_channels, hidden_channels, kernel_size, dilation=8, dropout=dropout),
+            TCNBlock(hidden_channels, hidden_channels, kernel_size, dilation=16, dropout=dropout),
+            TCNBlock(hidden_channels, hidden_channels, kernel_size, dilation=32, dropout=dropout),
         )
+        # Attention-weighted pooling instead of simple average
+        self.attn = nn.Linear(hidden_channels, 1)
+        # Deeper classification head
         self.fc1 = nn.Linear(hidden_channels, hidden_channels)
-        self.fc2 = nn.Linear(hidden_channels, n_classes)
+        self.fc2 = nn.Linear(hidden_channels, hidden_channels // 2)
+        self.fc3 = nn.Linear(hidden_channels // 2, n_classes)
         self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(hidden_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -117,11 +129,16 @@ class TCNNetwork(nn.Module):
         # Conv1d expects (batch, channels, length)
         x = x.transpose(1, 2)
         x = self.blocks(x)
-        # Global average pooling over time dimension
-        x = x.mean(dim=2)
-        x = F.relu(self.fc1(x))
+        # Attention-weighted pooling: learn which timesteps matter most
+        x = x.transpose(1, 2)  # (batch, length, channels)
+        attn_weights = torch.softmax(self.attn(x), dim=1)  # (batch, length, 1)
+        x = (x * attn_weights).sum(dim=1)  # (batch, channels)
+        x = self.layer_norm(x)
+        x = F.gelu(self.fc1(x))
         x = self.dropout(x)
-        return self.fc2(x)
+        x = F.gelu(self.fc2(x))
+        x = self.dropout(x)
+        return self.fc3(x)
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +151,7 @@ DIRECTION_MAP = {0: "up", 1: "down", 2: "neutral"}
 class TCNModel:
     """High-level wrapper around :class:`TCNNetwork` for inference and persistence."""
 
-    def __init__(self, n_features: int = 20, hidden_channels: int = 64, n_classes: int = 3):
+    def __init__(self, n_features: int = 20, hidden_channels: int = 256, n_classes: int = 3):
         self.n_features = n_features
         self.hidden_channels = hidden_channels
         self.n_classes = n_classes

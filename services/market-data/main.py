@@ -63,8 +63,8 @@ rest_symbols: List[str] = []
 
 # Tick buffer for batch DB writes
 tick_buffer: List[dict] = []
-TICK_BUFFER_SIZE = 100
-TICK_FLUSH_INTERVAL = 1.0  # flush every 1 second
+TICK_BUFFER_SIZE = 500  # larger buffer for higher throughput
+TICK_FLUSH_INTERVAL = 0.5  # flush every 500ms for fresher data
 
 
 async def init_db():
@@ -82,8 +82,8 @@ async def init_db():
             database=POSTGRES_DB,
             user=POSTGRES_USER,
             password=POSTGRES_PASSWORD,
-            min_size=2,
-            max_size=10,
+            min_size=5,
+            max_size=30,
         )
         logger.info("TimescaleDB connected")
     except Exception as e:

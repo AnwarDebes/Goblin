@@ -137,6 +137,15 @@ echo "  [PHASE 4] Analytics & API"
 start_service "backtesting"         "$ROOT/services/backtesting"         8011 2
 start_service "api-gateway"         "$ROOT/services/api-gateway"         8080 3
 
+echo ""
+echo "  [PHASE 4b] Continuous Learner (RL training)"
+printf "  Starting %-22s background ..." "continuous-learner"
+cd "$ROOT/services/continuous-learner"
+python3 main.py > "$LOGS/continuous-learner.log" 2>&1 &
+echo $! > "$LOGS/continuous-learner.pid"
+cd - > /dev/null
+echo " RUNNING (PID $(cat $LOGS/continuous-learner.pid))"
+
 # -----------------------------------------------------------
 # Dashboard (Next.js)
 # -----------------------------------------------------------

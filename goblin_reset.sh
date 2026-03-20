@@ -67,6 +67,7 @@ done
 
 # Kill any stragglers (pkill is more reliable than lsof)
 pkill -f "uvicorn main:app" 2>/dev/null && echo "    Killed remaining uvicorn processes." || true
+pkill -f "continuous-learner/main.py" 2>/dev/null && echo "    Killed continuous learner." || true
 pkill -f "next start" 2>/dev/null && echo "    Killed remaining next processes." || true
 pkill -f "next-server" 2>/dev/null || true
 

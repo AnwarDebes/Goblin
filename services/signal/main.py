@@ -13,7 +13,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict
 from contextlib import asynccontextmanager
 
@@ -35,7 +35,7 @@ from vol_sizing import calculate_vol_targeted_size, SizingResult
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 0.3))
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 0.55))
 STARTING_CAPITAL = float(os.getenv("STARTING_CAPITAL", 1000.0))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", 0.50))
 MIN_POSITION_USD = float(os.getenv("MIN_POSITION_USD", 1.0))
@@ -72,11 +72,17 @@ class Position(BaseModel):
     entry_price: float
 
 
+# Per-symbol cooldown after a losing trade (prevents re-entering losers)
+LOSS_COOLDOWN_MINUTES = float(os.getenv("LOSS_COOLDOWN_MINUTES", 15))
+# Require higher confidence to re-enter a symbol that recently lost
+LOSS_COOLDOWN_CONF_BOOST = float(os.getenv("LOSS_COOLDOWN_CONF_BOOST", 0.15))
+
 # Global State
 redis_client: Optional[aioredis.Redis] = None
 current_positions: Dict[str, Position] = {}
 last_signals: Dict[str, Signal] = {}
 processed_signals: set = set()
+symbol_loss_cooldowns: Dict[str, datetime] = {}  # symbol → cooldown expiry time
 last_regime: Dict[str, RegimeState] = {}  # Track last regime per symbol
 
 
@@ -213,6 +219,23 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
     else:
         SIGNALS_SKIPPED.labels(reason="no_action").inc()
         return None
+
+    # Per-symbol loss cooldown: block re-entry after a losing trade
+    if action == "buy" and symbol in symbol_loss_cooldowns:
+        cooldown_expiry = symbol_loss_cooldowns[symbol]
+        if datetime.utcnow() < cooldown_expiry:
+            # During cooldown, require significantly higher confidence
+            boosted_threshold = CONFIDENCE_THRESHOLD + LOSS_COOLDOWN_CONF_BOOST
+            if confidence < boosted_threshold:
+                remaining = (cooldown_expiry - datetime.utcnow()).total_seconds() / 60
+                SIGNALS_SKIPPED.labels(reason="loss_cooldown").inc()
+                logger.info("Loss cooldown blocked re-entry",
+                            symbol=symbol, confidence=f"{confidence:.2f}",
+                            required=f"{boosted_threshold:.2f}",
+                            cooldown_remaining=f"{remaining:.1f}min")
+                return None
+        else:
+            del symbol_loss_cooldowns[symbol]
 
     # ══════════════════════════════════════════════════════════════════
     # LAYER A: Regime Filter
@@ -370,6 +393,14 @@ async def listen_for_position_updates():
                     current_positions[symbol] = Position(**json.loads(pos_data))
             else:
                 current_positions.pop(symbol, None)
+                # Track losing trades for cooldown
+                pnl = data.get("pnl", 0)
+                if pnl < 0:
+                    cooldown_until = datetime.utcnow() + timedelta(minutes=LOSS_COOLDOWN_MINUTES)
+                    symbol_loss_cooldowns[symbol] = cooldown_until
+                    logger.info("Loss cooldown set",
+                                symbol=symbol, pnl=f"{pnl:.2f}",
+                                cooldown_minutes=LOSS_COOLDOWN_MINUTES)
 
 
 async def sync_balance_from_mexc():

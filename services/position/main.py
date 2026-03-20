@@ -1,14 +1,17 @@
 """
-Position Manager Service - AI-Driven Exit Strategy (v3.0)
+Position Manager Service - AI-Driven Exit Strategy (v4.0)
 
-Positions are opened/closed by AI prediction signals + dynamic trailing stops.
-A circuit-breaker at -15% exists as an emergency data-integrity safety net.
+Positions are opened/closed by AI prediction signals + smart adaptive stops.
 
-v3.0: Added dynamic trailing stop to capture fleeting profit spikes.
-  - Tracks peak price (high-water mark) per position every 500ms
-  - Activates trailing stop once profit crosses activation threshold
-  - Trail distance tightens as profit grows (tiered)
-  - Works alongside AI exits — whichever triggers first wins
+v4.0: Smart Adaptive Stop-Loss — 6-layer multi-factor system replaces fixed
+  circuit breaker + tiered trailing stop. Combines:
+  1. ATR-based Chandelier Exit (volatility-scaled)
+  2. Regime detection (trending/choppy/high-vol multipliers)
+  3. Momentum assessment (RSI + multi-timeframe momentum)
+  4. Volume confirmation (institutional vs noise selling)
+  5. Trend health (EMA crosses + MACD)
+  6. AI prediction integration (exit pressure modulates stop)
+  Hard floor at -7% absolute max. Minimum stop 0.8%.
 
 v2.0: Adaptive exit pressure — thresholds adjust per regime and volatility.
   - Trending markets: harder to exit (let winners run)
@@ -35,31 +38,13 @@ from prometheus_client import Gauge, Counter, generate_latest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from strategy.regime import RegimeState
 from strategy.adaptive_exit import compute_adaptive_exit_params, explain_exit
+from strategy.smart_stop import compute_smart_stop
 
 # Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 AI_EXIT_CONFIDENCE = float(os.getenv("AI_EXIT_CONFIDENCE", 0.20))  # Min confidence for AI-driven exit
-CIRCUIT_BREAKER_PCT = float(os.getenv("CIRCUIT_BREAKER_PCT", 0.15))  # Emergency-only: -15% unrealized loss
-
-# Dynamic trailing stop configuration (profit spike capture)
-# Tiers: (activation_pct, base_trail_pct) — trail tightens as profit grows
-# Trail distance is multiplied by ATR factor for volatility awareness
-TRAILING_STOP_TIERS = [
-    (0.035, 0.020),   # +3.5% profit → base trail 2.0% from peak
-    (0.06, 0.013),    # +6% profit → base trail 1.3% from peak
-    (0.10, 0.009),    # +10% profit → base trail 0.9% from peak
-    (0.18, 0.006),    # +18% profit → base trail 0.6% from peak
-]
-TRAILING_STOP_ENABLED = os.getenv("TRAILING_STOP_ENABLED", "true").lower() == "true"
-# ATR scaling: trail_pct = base_trail_pct * max(1.0, atr_pct / ATR_BASELINE)
-# Volatile coins get wider trails so they don't get stopped out on noise
-ATR_BASELINE = float(os.getenv("ATR_BASELINE", 0.5))  # "normal" ATR% — coins above this get wider trails
-ATR_TRAIL_MAX_MULT = float(os.getenv("ATR_TRAIL_MAX_MULT", 2.5))  # Cap: trail can be at most 2.5x wider
-# AI veto: if AI exit pressure is below this ratio of threshold, widen trail (AI says hold)
-AI_VETO_PRESSURE_RATIO = float(os.getenv("AI_VETO_PRESSURE_RATIO", 0.3))  # Below 30% of threshold = AI says hold
-AI_VETO_TRAIL_MULT = float(os.getenv("AI_VETO_TRAIL_MULT", 1.8))  # Widen trail 1.8x when AI says hold
 
 # Exit pressure configuration (AI signal persistence)
 EXIT_PRESSURE_THRESHOLD = float(os.getenv("EXIT_PRESSURE_THRESHOLD", 1.5))  # Cumulative pressure to trigger exit
@@ -73,7 +58,7 @@ POSITION_VALUE = Gauge("position_value", "Position value", ["symbol"])
 TOTAL_PNL = Gauge("position_total_pnl", "Total P&L")
 AI_EXIT_PRESSURE = Gauge("position_ai_exit_pressure", "Current AI exit pressure", ["symbol"])
 AI_EXITS_TOTAL = Counter("position_ai_exits_total", "AI-driven exits", ["reason"])
-CIRCUIT_BREAKER_EXITS = Counter("position_circuit_breaker_exits_total", "Circuit breaker emergency exits")
+SMART_STOP_EXITS = Counter("position_smart_stop_exits_total", "Smart adaptive stop exits", ["reason"])
 TRAILING_STOP_EXITS = Counter("position_trailing_stop_exits_total", "Trailing stop profit-lock exits")
 
 
@@ -388,18 +373,21 @@ async def close_position(symbol: str, reason: str):
 
 
 async def update_prices():
-    """Update position prices in real-time with dynamic trailing stop + circuit breaker.
+    """Update position prices with Smart Adaptive Stop-Loss (v4.0).
 
-    Exit priority (first match wins):
-    1. Circuit breaker: -15% unrealized loss (emergency safety net)
-    2. Trailing stop: locks in profit once threshold reached, sells on pullback from peak
-    3. AI exit pressure: accumulates over many prediction cycles (handled elsewhere)
+    Every 500ms per position:
+    1. Fetch latest tick price
+    2. Update peak price (high-water mark)
+    3. Read full feature set from Redis (ATR, RSI, volume, momentum, MACD, EMA, Bollinger)
+    4. Get regime state and AI exit pressure
+    5. Call compute_smart_stop() — 6-layer adaptive calculation
+    6. Exit if should_exit is True (hard floor breach or adaptive trail triggered)
+    7. AI exit pressure still runs in parallel (handled by listen_for_prediction_exits)
     """
     global positions
     while True:
         await asyncio.sleep(0.5)
-        circuit_breaker_triggered = []
-        trailing_stop_triggered = []
+        smart_stop_triggered = []
 
         for symbol, pos in list(positions.items()):
             if pos.status != "open":
@@ -416,100 +404,117 @@ async def update_prices():
                 if pos.entry_price > 0:
                     pnl_pct = ((pos.current_price - pos.entry_price) / pos.entry_price) if pos.side == "long" else ((pos.entry_price - pos.current_price) / pos.entry_price)
 
-                    # --- CIRCUIT BREAKER (emergency safety net) ---
-                    if pnl_pct <= -CIRCUIT_BREAKER_PCT:
-                        logger.error("CIRCUIT BREAKER triggered — emergency exit",
-                                     symbol=symbol, pnl_pct=f"{pnl_pct:.2%}",
-                                     threshold=f"-{CIRCUIT_BREAKER_PCT:.0%}",
-                                     entry=pos.entry_price, current=pos.current_price)
-                        circuit_breaker_triggered.append(symbol)
+                    # Update peak price (high-water mark)
+                    if pos.side == "long":
+                        if pos.peak_price == 0:
+                            pos.peak_price = pos.entry_price
+                        if pos.current_price > pos.peak_price:
+                            pos.peak_price = pos.current_price
+                    else:
+                        if pos.peak_price == 0:
+                            pos.peak_price = pos.entry_price
+                        if pos.current_price < pos.peak_price:
+                            pos.peak_price = pos.current_price
+
+                    # Track peak profit %
+                    peak_pnl = ((pos.peak_price - pos.entry_price) / pos.entry_price) if pos.side == "long" else ((pos.entry_price - pos.peak_price) / pos.entry_price)
+                    if peak_pnl > pos.peak_pnl_pct:
+                        pos.peak_pnl_pct = peak_pnl
+
+                    # Calculate hold time
+                    hold_time_minutes = 0.0
+                    try:
+                        opened_at = datetime.fromisoformat(pos.opened_at.replace('Z', '+00:00').replace('+00:00', ''))
+                        hold_time_minutes = (datetime.utcnow() - opened_at).total_seconds() / 60
+                    except Exception:
+                        pass
+
+                    # Read full feature set from Redis
+                    atr_pct = 0.5
+                    rsi_14 = 50.0
+                    volume_ratio = 1.0
+                    momentum_5m = 0.0
+                    momentum_15m = 0.0
+                    momentum_30m = 0.0
+                    macd_histogram = 0.0
+                    ema_cross_9_21 = 0.0
+                    ema_cross_25_50 = 0.0
+                    bollinger_b = 0.5
+                    try:
+                        features_data = await redis_client.get(f"features:{symbol}")
+                        if features_data:
+                            f = json.loads(features_data)
+                            atr_pct = float(f.get("atr_pct", 0.5))
+                            rsi_14 = float(f.get("rsi_14", 50.0))
+                            volume_ratio = float(f.get("volume_ratio", 1.0))
+                            momentum_5m = float(f.get("momentum_5m", 0.0))
+                            momentum_15m = float(f.get("momentum_15m", 0.0))
+                            momentum_30m = float(f.get("momentum_30m", 0.0))
+                            macd_histogram = float(f.get("macd_histogram", 0.0))
+                            ema_cross_9_21 = float(f.get("ema_cross_9_21", 0.0))
+                            ema_cross_25_50 = float(f.get("ema_cross_25_50", 0.0))
+                            bollinger_b = float(f.get("bollinger_b", 0.5))
+                    except Exception:
+                        pass
+
+                    # Get regime state
+                    regime_name = "unknown"
+                    regime_state = await _get_regime_for_symbol(symbol)
+                    if regime_state:
+                        regime_name = regime_state.regime
+
+                    # Get AI exit pressure
+                    pressure_state = exit_tracker.get_state(symbol)
+                    ai_pressure = pressure_state["pressure"]
+                    ai_threshold = pressure_state["threshold"]
+
+                    # ── SMART ADAPTIVE STOP (6-layer) ──
+                    stop_result = compute_smart_stop(
+                        pnl_pct=pnl_pct,
+                        peak_pnl_pct=pos.peak_pnl_pct,
+                        atr_pct=atr_pct,
+                        rsi_14=rsi_14,
+                        volume_ratio=volume_ratio,
+                        momentum_5m=momentum_5m,
+                        momentum_15m=momentum_15m,
+                        momentum_30m=momentum_30m,
+                        macd_histogram=macd_histogram,
+                        ema_cross_9_21=ema_cross_9_21,
+                        ema_cross_25_50=ema_cross_25_50,
+                        regime=regime_name,
+                        ai_pressure=ai_pressure,
+                        ai_threshold=ai_threshold,
+                        hold_time_minutes=hold_time_minutes,
+                        bollinger_b=bollinger_b,
+                        side=pos.side,
+                    )
+
+                    # Mark trailing as active when stop is engaged
+                    if pos.peak_pnl_pct >= 0.01 and not pos.trailing_active:
+                        pos.trailing_active = True
+                        logger.info("Smart stop TRACKING",
+                                    symbol=symbol,
+                                    peak_pnl=f"{pos.peak_pnl_pct:.2%}",
+                                    stop_dist=f"{stop_result.stop_distance_pct:.2%}",
+                                    regime=regime_name,
+                                    mults=f"R{stop_result.regime_mult:.2f}|M{stop_result.momentum_mult:.2f}|V{stop_result.volume_mult:.2f}|T{stop_result.trend_mult:.2f}|A{stop_result.ai_mult:.2f}")
+
+                    if stop_result.should_exit:
+                        reason = stop_result.reason
+                        logger.info("SMART STOP triggered",
+                                    symbol=symbol,
+                                    reason=reason,
+                                    pnl_pct=f"{pnl_pct:.2%}",
+                                    peak_pnl=f"{pos.peak_pnl_pct:.2%}",
+                                    stop_dist=f"{stop_result.stop_distance_pct:.2%}",
+                                    base_atr=f"{stop_result.base_atr_stop:.4f}",
+                                    regime=regime_name,
+                                    mults=f"R{stop_result.regime_mult:.2f}|M{stop_result.momentum_mult:.2f}|V{stop_result.volume_mult:.2f}|T{stop_result.trend_mult:.2f}|A{stop_result.ai_mult:.2f}",
+                                    profit_usd=f"{pos.unrealized_pnl:.2f}",
+                                    ai_pressure=f"{ai_pressure:.3f}")
+                        smart_stop_triggered.append((symbol, reason))
                         await redis_client.hset("positions", symbol, pos.model_dump_json())
                         continue
-
-                    # --- DYNAMIC TRAILING STOP (volatility-aware + AI veto) ---
-                    if TRAILING_STOP_ENABLED:
-                        # Update peak price (high-water mark)
-                        if pos.side == "long":
-                            if pos.peak_price == 0:
-                                pos.peak_price = pos.entry_price
-                            if pos.current_price > pos.peak_price:
-                                pos.peak_price = pos.current_price
-                        else:
-                            if pos.peak_price == 0:
-                                pos.peak_price = pos.entry_price
-                            if pos.current_price < pos.peak_price:
-                                pos.peak_price = pos.current_price
-
-                        # Track peak profit %
-                        peak_pnl = ((pos.peak_price - pos.entry_price) / pos.entry_price) if pos.side == "long" else ((pos.entry_price - pos.peak_price) / pos.entry_price)
-                        if peak_pnl > pos.peak_pnl_pct:
-                            pos.peak_pnl_pct = peak_pnl
-
-                        # Determine base trail distance from tiers
-                        base_trail_pct = None
-                        for activation_pct, tier_trail_pct in reversed(TRAILING_STOP_TIERS):
-                            if pos.peak_pnl_pct >= activation_pct:
-                                base_trail_pct = tier_trail_pct
-                                break
-
-                        if base_trail_pct is not None:
-                            # --- ATR scaling: volatile coins get wider trails ---
-                            atr_mult = 1.0
-                            try:
-                                features_data = await redis_client.get(f"features:{symbol}")
-                                if features_data:
-                                    atr_pct = float(json.loads(features_data).get("atr_pct", ATR_BASELINE))
-                                    if atr_pct > ATR_BASELINE:
-                                        atr_mult = min(atr_pct / ATR_BASELINE, ATR_TRAIL_MAX_MULT)
-                            except Exception:
-                                pass
-
-                            # --- AI veto: if AI says "hold", widen the trail ---
-                            ai_mult = 1.0
-                            pressure_state = exit_tracker.get_state(symbol)
-                            ai_pressure = pressure_state["pressure"]
-                            ai_threshold = pressure_state["threshold"]
-                            if ai_threshold > 0 and (ai_pressure / ai_threshold) < AI_VETO_PRESSURE_RATIO:
-                                ai_mult = AI_VETO_TRAIL_MULT
-
-                            # Final trail distance
-                            trail_pct = base_trail_pct * atr_mult * ai_mult
-
-                            if not pos.trailing_active:
-                                pos.trailing_active = True
-                                logger.info("Trailing stop ACTIVATED",
-                                            symbol=symbol,
-                                            peak_pnl=f"{pos.peak_pnl_pct:.2%}",
-                                            base_trail=f"{base_trail_pct:.2%}",
-                                            atr_mult=f"{atr_mult:.2f}",
-                                            ai_mult=f"{ai_mult:.2f}",
-                                            final_trail=f"{trail_pct:.2%}",
-                                            peak_price=pos.peak_price,
-                                            entry=pos.entry_price)
-
-                            # Check if price has pulled back from peak beyond trail distance
-                            if pos.side == "long":
-                                drop_from_peak = (pos.peak_price - pos.current_price) / pos.peak_price
-                            else:
-                                drop_from_peak = (pos.current_price - pos.peak_price) / pos.peak_price
-
-                            if drop_from_peak >= trail_pct:
-                                logger.info("TRAILING STOP triggered — locking profit",
-                                            symbol=symbol,
-                                            pnl_pct=f"{pnl_pct:.2%}",
-                                            peak_pnl=f"{pos.peak_pnl_pct:.2%}",
-                                            peak_price=pos.peak_price,
-                                            current=pos.current_price,
-                                            base_trail=f"{base_trail_pct:.2%}",
-                                            atr_mult=f"{atr_mult:.2f}",
-                                            ai_mult=f"{ai_mult:.2f}",
-                                            final_trail=f"{trail_pct:.2%}",
-                                            drop_from_peak=f"{drop_from_peak:.2%}",
-                                            profit_usd=f"{pos.unrealized_pnl:.2f}",
-                                            ai_pressure=f"{ai_pressure:.3f}")
-                                trailing_stop_triggered.append(symbol)
-                                await redis_client.hset("positions", symbol, pos.model_dump_json())
-                                continue
 
                 await redis_client.hset("positions", symbol, pos.model_dump_json())
 
@@ -529,13 +534,11 @@ async def update_prices():
                 AI_EXIT_PRESSURE.labels(symbol=symbol).set(pressure_state["pressure"])
 
         # Execute exits outside the iteration loop
-        for symbol in circuit_breaker_triggered:
-            CIRCUIT_BREAKER_EXITS.inc()
-            await close_position(symbol, "circuit_breaker")
-        for symbol in trailing_stop_triggered:
+        for symbol, reason in smart_stop_triggered:
+            SMART_STOP_EXITS.labels(reason=reason).inc()
             TRAILING_STOP_EXITS.inc()
             exit_tracker.reset(symbol)
-            await close_position(symbol, "trailing_stop")
+            await close_position(symbol, f"smart_stop_{reason}")
 
 
 async def load_positions():
@@ -751,9 +754,10 @@ async def lifespan(app: FastAPI):
 
     redis_client = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
     await load_positions()
-    logger.info("Positions loaded — AI-only exit mode active",
+    logger.info("Positions loaded — Smart Adaptive Stop v4.0 active",
                 open_positions=len([p for p in positions.values() if p.status == "open"]),
-                circuit_breaker=f"-{CIRCUIT_BREAKER_PCT:.0%}",
+                smart_stop="6-layer (ATR+Regime+Momentum+Volume+Trend+AI)",
+                hard_floor="-7%",
                 exit_pressure_threshold=EXIT_PRESSURE_THRESHOLD,
                 min_sell_signals=MIN_SELL_SIGNALS_BEFORE_EXIT)
 
@@ -778,8 +782,8 @@ async def health():
     return {
         "status": "healthy",
         "positions": len([p for p in positions.values() if p.status == "open"]),
-        "exit_mode": "adaptive_regime_pressure_v2",
-        "circuit_breaker": f"-{CIRCUIT_BREAKER_PCT:.0%}",
+        "exit_mode": "smart_adaptive_stop_v4",
+        "hard_floor": "-7%",
         "base_pressure_threshold": EXIT_PRESSURE_THRESHOLD,
     }
 
@@ -821,9 +825,9 @@ async def get_position_health():
             health_status = "healthy"
             issues = []
 
-            if pnl_pct < -CIRCUIT_BREAKER_PCT * 100 * 0.7:  # Approaching circuit breaker
+            if pnl_pct < -5.0:  # Approaching hard floor (-7%)
                 health_status = "warning"
-                issues.append(f"Approaching circuit breaker: {pnl_pct:.2f}%")
+                issues.append(f"Approaching hard floor: {pnl_pct:.2f}%")
             elif pnl_pct < -5:
                 health_status = "loss"
                 issues.append(f"Significant loss: {pnl_pct:.2f}%")

@@ -1,5 +1,14 @@
 """
-Goblin Continuous Learner — Reinforcement Learning & Online Training Service.
+Goblin Continuous Learner — Reinforcement Learning & Online Training Service (v2.0).
+
+v2.0 improvements over v1.0:
+- Faster training cycle: 5 minutes (was 10)
+- Exponential recency weighting: recent data weighted up to 3x more than old data
+- Performance gating: new model only deployed if it beats current accuracy
+- Faster reward evaluation: 10-minute outcome window (was 25 minutes)
+- Per-sample recency + reward combined weighting
+- Data freshness validation: warns if data is stale
+- Warm start: RL weighting active from first cycle if rewards exist
 
 Runs as a persistent background service that:
 1. Continuously collects new market data from TimescaleDB
@@ -7,14 +16,6 @@ Runs as a persistent background service that:
 3. Performs incremental RL-weighted training on both TCN and XGBoost
 4. Hot-swaps model files so the prediction service picks up improvements
 5. Logs training metrics to Redis for the AI Nerve Monitor
-
-The key RL mechanism:
-- Each prediction is recorded with its timestamp and features
-- After the outcome window (N candles), the actual price direction is observed
-- Reward = +1 (correct direction), -1 (wrong direction), 0 (neutral/hold correct)
-- Training samples are weighted by cumulative reward history
-- TCN uses policy-gradient-style loss weighting
-- XGBoost uses sample_weight parameter for reward-biased training
 """
 
 import asyncio
@@ -51,18 +52,26 @@ MODELS_DIR = Path(os.getenv("MODELS_DIR", "/home/coder/Goblin/shared/models"))
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Training schedule
-TRAIN_INTERVAL_MINUTES = int(os.getenv("TRAIN_INTERVAL_MINUTES", "10"))
-REWARD_LOOKBACK_CANDLES = 5  # How many candles ahead to check outcome
+TRAIN_INTERVAL_MINUTES = int(os.getenv("TRAIN_INTERVAL_MINUTES", "5"))  # v2: 5min (was 10)
+REWARD_LOOKBACK_CANDLES = 2  # v2: 2 candles = 10 minutes (was 5 candles = 25min)
 MIN_SAMPLES_FOR_TRAINING = 500
 LEARNING_RATE_TCN = 0.0003
 LEARNING_RATE_XGB = 0.03
-TCN_EPOCHS_PER_CYCLE = int(os.getenv("TCN_EPOCHS_PER_CYCLE", "20"))
-XGB_BOOST_ROUNDS_PER_CYCLE = int(os.getenv("XGB_BOOST_ROUNDS_PER_CYCLE", "100"))
-TCN_HIDDEN_CHANNELS = int(os.getenv("TCN_HIDDEN_CHANNELS", "128"))
-TCN_BATCH_SIZE = int(os.getenv("TCN_BATCH_SIZE", "256"))
-XGB_MAX_DEPTH = int(os.getenv("XGB_MAX_DEPTH", "8"))
+TCN_EPOCHS_PER_CYCLE = int(os.getenv("TCN_EPOCHS_PER_CYCLE", "30"))
+XGB_BOOST_ROUNDS_PER_CYCLE = int(os.getenv("XGB_BOOST_ROUNDS_PER_CYCLE", "200"))
+TCN_HIDDEN_CHANNELS = int(os.getenv("TCN_HIDDEN_CHANNELS", "256"))
+TCN_BATCH_SIZE = int(os.getenv("TCN_BATCH_SIZE", "512"))
+XGB_MAX_DEPTH = int(os.getenv("XGB_MAX_DEPTH", "10"))
 TRAINING_DAYS = int(os.getenv("TRAINING_DAYS", "90"))
 MAX_TRAINING_SYMBOLS = int(os.getenv("MAX_TRAINING_SYMBOLS", "100"))
+
+# v2: Recency weighting — recent data is more valuable
+RECENCY_HALF_LIFE_DAYS = 7  # Data from 7 days ago gets 50% weight
+RECENCY_MAX_BOOST = 3.0     # Most recent data weighted up to 3x
+
+# v2: Performance gating — only deploy if new model is better
+MIN_ACCURACY_IMPROVEMENT = 0.0  # Deploy if equal or better (0 = always deploy if not worse)
+GATE_MODELS = os.getenv("GATE_MODELS", "true").lower() == "true"
 
 # Feature names matching prediction service's features/technical.py
 TECHNICAL_FEATURES = [
@@ -265,7 +274,7 @@ def compute_features_for_df(df: pd.DataFrame) -> np.ndarray:
     return features
 
 
-def compute_targets_5class(close: np.ndarray, horizon: int = 5) -> np.ndarray:
+def compute_targets_5class(close: np.ndarray, horizon: int = REWARD_LOOKBACK_CANDLES) -> np.ndarray:
     """5-class targets for XGBoost matching prediction service labels."""
     future_ret = np.zeros(len(close))
     for i in range(len(close) - horizon):
@@ -282,7 +291,7 @@ def compute_targets_5class(close: np.ndarray, horizon: int = 5) -> np.ndarray:
     return targets
 
 
-def compute_targets_3class(close: np.ndarray, horizon: int = 5) -> np.ndarray:
+def compute_targets_3class(close: np.ndarray, horizon: int = REWARD_LOOKBACK_CANDLES) -> np.ndarray:
     """3-class targets for TCN: 0=up, 1=down, 2=neutral."""
     future_ret = np.zeros(len(close))
     for i in range(len(close) - horizon):
@@ -318,11 +327,17 @@ class RewardTracker:
         await self.redis.ltrim(self.prediction_key, 0, 9999)
 
     async def evaluate_rewards(self, pool: asyncpg.Pool) -> Dict[str, float]:
-        """Check past predictions against actual outcomes, return reward weights per symbol."""
+        """Check past predictions against actual outcomes, return reward weights per symbol.
+
+        v2.0: Faster evaluation — checks outcome after 10 minutes (2 candles) instead of 25.
+        Also checks tick data as fallback when candles aren't available yet.
+        """
         rewards = {}
         pending = await self.redis.lrange(self.prediction_key, 0, 999)
         resolved = []
         unresolved = []
+
+        outcome_minutes = REWARD_LOOKBACK_CANDLES * 5  # 2 candles × 5min = 10 min
 
         for raw in pending:
             try:
@@ -330,20 +345,29 @@ class RewardTracker:
                 pred_time = datetime.fromisoformat(pred["timestamp"])
                 age_minutes = (datetime.now(timezone.utc) - pred_time).total_seconds() / 60
 
-                # Need at least 25 minutes for 5-candle (5m) outcome
-                if age_minutes < 25:
+                # v2: 10 minutes for 2-candle outcome (was 25 min)
+                if age_minutes < outcome_minutes:
                     unresolved.append(raw)
                     continue
 
-                # Check actual price movement
+                # Check actual price movement — try candles first, then ticks
                 async with pool.acquire() as conn:
                     row = await conn.fetchrow(
                         """SELECT close FROM candles
                            WHERE symbol = $1 AND time > $2
                            ORDER BY time ASC LIMIT 1""",
                         pred["symbol"],
-                        pred_time + timedelta(minutes=25),
+                        pred_time + timedelta(minutes=outcome_minutes),
                     )
+                    # Fallback: use tick data if candles not yet aggregated
+                    if row is None:
+                        row = await conn.fetchrow(
+                            """SELECT price AS close FROM ticks
+                               WHERE symbol = $1 AND time > $2
+                               ORDER BY time ASC LIMIT 1""",
+                            pred["symbol"],
+                            pred_time + timedelta(minutes=outcome_minutes),
+                        )
 
                 if row is None:
                     if age_minutes > 120:  # Too old, discard
@@ -811,6 +835,19 @@ async def training_cycle(pool: asyncpg.Pool, redis: aioredis.Redis,
         logger.warning("Insufficient candle data for training", count=len(candles_df))
         return
 
+    # v2: Data freshness validation
+    if "time" in candles_df.columns and len(candles_df) > 0:
+        latest_candle = pd.Timestamp(candles_df["time"].max())
+        if latest_candle.tzinfo is None:
+            latest_candle = latest_candle.tz_localize("UTC")
+        data_age_min = (datetime.now(timezone.utc) - latest_candle.to_pydatetime()).total_seconds() / 60
+        if data_age_min > 30:
+            logger.warning("Training data may be STALE — newest candle is old",
+                           age_minutes=round(data_age_min, 1),
+                           latest_candle=str(latest_candle))
+        else:
+            logger.info("Training data fresh", age_minutes=round(data_age_min, 1))
+
     logger.info(f"Loaded {len(candles_df)} candles for {candles_df['symbol'].nunique()} symbols")
 
     # Evaluate pending prediction rewards
@@ -824,6 +861,8 @@ async def training_cycle(pool: asyncpg.Pool, redis: aioredis.Redis,
     all_targets_5 = []
     all_reward_weights = []
 
+    now_utc = datetime.now(timezone.utc)
+
     for symbol in candles_df["symbol"].unique():
         sym_df = candles_df[candles_df["symbol"] == symbol].sort_values("time").reset_index(drop=True)
         if len(sym_df) < 100:
@@ -833,11 +872,25 @@ async def training_cycle(pool: asyncpg.Pool, redis: aioredis.Redis,
         t3 = compute_targets_3class(sym_df["close"].values)
         t5 = compute_targets_5class(sym_df["close"].values)
 
-        # RL reward weight: boost samples from symbols with recent positive rewards
+        # v2: Combined recency + reward weighting
+        # Recency: exponential decay — recent data is more valuable
         sym_reward = reward_summary.get(symbol, 0.0)
-        # Map reward [-1, 1] to weight [0.5, 2.0]
-        base_weight = 1.0 + sym_reward * 0.5
-        weights = np.full(len(feats), base_weight)
+        reward_weight = 1.0 + sym_reward * 0.5  # Map [-1, 1] → [0.5, 1.5]
+
+        weights = np.ones(len(feats))
+        if "time" in sym_df.columns:
+            for i, row_time in enumerate(sym_df["time"].values):
+                try:
+                    t = pd.Timestamp(row_time)
+                    if t.tzinfo is None:
+                        t = t.tz_localize("UTC")
+                    age_days = (now_utc - t.to_pydatetime()).total_seconds() / 86400
+                    # Exponential recency: weight = RECENCY_MAX_BOOST * 0.5^(age/half_life)
+                    recency = RECENCY_MAX_BOOST * (0.5 ** (age_days / RECENCY_HALF_LIFE_DAYS))
+                    recency = max(recency, 0.3)  # Floor: even old data gets 0.3 weight
+                    weights[i] = recency * reward_weight
+                except Exception:
+                    weights[i] = reward_weight
 
         # Trim last REWARD_LOOKBACK_CANDLES (no future data)
         valid = len(feats) - REWARD_LOOKBACK_CANDLES
@@ -857,36 +910,71 @@ async def training_cycle(pool: asyncpg.Pool, redis: aioredis.Redis,
 
     logger.info(f"Training data: {len(features)} samples, {features.shape[1]} features")
 
-    # Train TCN with RL
+    # v2: Always use RL weighting (warm start) and always try incremental learning
     tcn_existing = str(MODELS_DIR / "tcn_latest.pt")
+    xgb_existing = str(MODELS_DIR / "xgboost_latest.json")
+
+    # Load current model accuracy for performance gating
+    current_tcn_acc = 0.0
+    current_xgb_acc = 0.0
+    if GATE_MODELS:
+        try:
+            tcn_meta_path = MODELS_DIR / "tcn_metadata.json"
+            if tcn_meta_path.exists():
+                with open(tcn_meta_path) as f:
+                    current_tcn_acc = json.load(f).get("accuracy", 0)
+            xgb_meta_path = MODELS_DIR / "xgboost_metadata.json"
+            if xgb_meta_path.exists():
+                with open(xgb_meta_path) as f:
+                    current_xgb_acc = json.load(f).get("accuracy", 0)
+        except Exception:
+            pass
+
+    # Train TCN with RL (always use reward weights + incremental)
     tcn_meta = await asyncio.to_thread(
         train_tcn_rl,
         features, targets_3,
-        reward_weights if cycle_num > 1 else None,  # No RL weighting on first cycle
-        tcn_existing if cycle_num > 1 else None,
+        reward_weights,  # v2: always use RL weighting
+        tcn_existing,    # v2: always try incremental
         MODELS_DIR,
         TCN_EPOCHS_PER_CYCLE,
         LEARNING_RATE_TCN,
     )
 
     # Train XGBoost with RL
-    xgb_existing = str(MODELS_DIR / "xgboost_latest.json")
     xgb_meta = await asyncio.to_thread(
         train_xgboost_rl,
         features, targets_5,
-        reward_weights if cycle_num > 1 else None,
-        xgb_existing if cycle_num > 1 else None,
+        reward_weights,
+        xgb_existing,
         MODELS_DIR,
         XGB_BOOST_ROUNDS_PER_CYCLE,
         LEARNING_RATE_XGB,
     )
 
-    # Update registry
-    update_registry(MODELS_DIR, tcn_meta, xgb_meta)
+    # v2: Performance gating — only deploy if new model isn't worse
+    tcn_deployed = True
+    xgb_deployed = True
+    if GATE_MODELS:
+        new_tcn_acc = tcn_meta.get("accuracy", 0)
+        new_xgb_acc = xgb_meta.get("accuracy", 0)
+        if new_tcn_acc < current_tcn_acc - MIN_ACCURACY_IMPROVEMENT and current_tcn_acc > 0:
+            logger.warning("TCN accuracy regressed, keeping old model",
+                           current=current_tcn_acc, new=new_tcn_acc)
+            tcn_deployed = False
+        if new_xgb_acc < current_xgb_acc - MIN_ACCURACY_IMPROVEMENT and current_xgb_acc > 0:
+            logger.warning("XGBoost accuracy regressed, keeping old model",
+                           current=current_xgb_acc, new=new_xgb_acc)
+            xgb_deployed = False
 
-    # Signal prediction service to reload (via Redis)
-    await redis.set("model:reload_signal", datetime.now(timezone.utc).isoformat())
-    await redis.publish("model:reload", "updated")
+    # Update registry and signal reload only if at least one model improved
+    if tcn_deployed or xgb_deployed:
+        update_registry(MODELS_DIR, tcn_meta if tcn_deployed else {}, xgb_meta if xgb_deployed else {})
+        await redis.set("model:reload_signal", datetime.now(timezone.utc).isoformat())
+        await redis.publish("model:reload", "updated")
+        logger.info("Models deployed", tcn=tcn_deployed, xgb=xgb_deployed)
+    else:
+        logger.info("No model improvements — skipping deployment")
 
     # Save training summary
     summary = {
@@ -897,6 +985,10 @@ async def training_cycle(pool: asyncpg.Pool, redis: aioredis.Redis,
         "reward_summary": {k: round(v, 4) for k, v in reward_summary.items()},
         "tcn": tcn_meta,
         "xgboost": xgb_meta,
+        "tcn_deployed": tcn_deployed,
+        "xgb_deployed": xgb_deployed,
+        "recency_half_life_days": RECENCY_HALF_LIFE_DAYS,
+        "outcome_window_minutes": REWARD_LOOKBACK_CANDLES * 5,
     }
     with open(MODELS_DIR / "training_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
@@ -920,17 +1012,61 @@ async def training_cycle(pool: asyncpg.Pool, redis: aioredis.Redis,
     logger.info(f"=== Training cycle {cycle_num} complete ===")
 
 
+async def listen_for_predictions(redis: aioredis.Redis, reward_tracker: RewardTracker):
+    """Subscribe to all prediction channels and record them for reward evaluation.
+
+    This closes the RL feedback loop: predictions are recorded with their price,
+    then later evaluated against actual outcome to compute reward signals.
+    """
+    backoff = 1
+    while running:
+        try:
+            pubsub = redis.pubsub()
+            await pubsub.psubscribe("predictions:*")
+            logger.info("Prediction listener started — recording predictions for RL rewards")
+            backoff = 1
+
+            async for message in pubsub.listen():
+                if not running:
+                    break
+                if message["type"] != "pmessage":
+                    continue
+                try:
+                    pred = json.loads(message["data"])
+                    symbol = pred.get("symbol", "")
+                    direction = pred.get("direction", "hold")
+                    confidence = float(pred.get("confidence", 0))
+                    price = float(pred.get("current_price", pred.get("price", 0)))
+
+                    if symbol and price > 0 and confidence > 0.3:
+                        await reward_tracker.record_prediction(
+                            symbol=symbol, direction=direction,
+                            confidence=confidence, price=price,
+                        )
+                except Exception:
+                    pass
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error("Prediction listener error, reconnecting", error=str(e), backoff=backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30)
+
+
 async def main():
     global DEFAULT_SYMBOLS
 
-    logger.info("Goblin Continuous Learner starting",
+    logger.info("Goblin Continuous Learner v2.0 starting",
                 interval_min=TRAIN_INTERVAL_MINUTES,
+                recency_half_life=RECENCY_HALF_LIFE_DAYS,
+                outcome_window_min=REWARD_LOOKBACK_CANDLES * 5,
                 models_dir=str(MODELS_DIR))
 
     pool = await asyncpg.create_pool(
         host=POSTGRES_HOST, port=POSTGRES_PORT,
         database=POSTGRES_DB, user=POSTGRES_USER,
-        password=POSTGRES_PASSWORD, min_size=2, max_size=10,
+        password=POSTGRES_PASSWORD, min_size=5, max_size=20,
     )
 
     redis = aioredis.Redis(
@@ -945,6 +1081,10 @@ async def main():
                 first_five=DEFAULT_SYMBOLS[:5])
 
     reward_tracker = RewardTracker(redis)
+
+    # v2: Start prediction listener in background (closes the RL feedback loop)
+    prediction_task = asyncio.create_task(listen_for_predictions(redis, reward_tracker))
+
     cycle = 0
 
     # Run first training immediately
@@ -975,6 +1115,11 @@ async def main():
             await asyncio.sleep(60)
 
     logger.info("Continuous learner shutting down")
+    prediction_task.cancel()
+    try:
+        await prediction_task
+    except asyncio.CancelledError:
+        pass
     await pool.close()
     await redis.close()
 
