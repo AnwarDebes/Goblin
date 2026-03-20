@@ -78,7 +78,7 @@ async def compute_all_features():
     Uses asyncio.gather with a semaphore to parallelize across CPU cores.
     """
     global latest_features, _last_db_persist
-    sem = asyncio.Semaphore(48)  # Bound concurrency (DB pool is the real limiter)
+    sem = asyncio.Semaphore(96)  # 96 cores available — parallelize aggressively
 
     async def _process_symbol(symbol: str, should_persist: bool):
         async with sem:

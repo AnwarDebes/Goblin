@@ -436,8 +436,8 @@ async def collect_market_data():
                             price_history[symbol] = []
                         price_history[symbol].append(data_point)
                         # Keep last 200 ticks
-                        if len(price_history[symbol]) > 200:
-                            price_history[symbol] = price_history[symbol][-200:]
+                        if len(price_history[symbol]) > 500:
+                            price_history[symbol] = price_history[symbol][-500:]
                     except Exception as exc:
                         logger.debug("Tick parse error", error=str(exc))
                 else:
@@ -567,7 +567,7 @@ async def prediction_loop():
                 # never blocks the event loop long enough to miss health checks.
                 sentiment_map = {}
                 onchain_map = {}
-                ext_sem = asyncio.Semaphore(20)
+                ext_sem = asyncio.Semaphore(60)
 
                 async def _fetch_ext(sym):
                     async with ext_sem:

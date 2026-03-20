@@ -38,15 +38,15 @@ class EdgeDecision:
 
 # ── Configuration ─────────────────────────────────────────────────────
 
-EDGE_THRESHOLD = 0.40          # minimum edge score to take trade
-MIN_CONFIDENCE = 0.35          # model must be at least 35% confident
-MAX_SPREAD_PCT = 0.5           # skip if spread > 0.5% (too expensive)
+EDGE_THRESHOLD = 0.50          # minimum edge score to take trade (raised from 0.40)
+MIN_CONFIDENCE = 0.50          # model must be at least 50% confident (raised from 0.35)
+MAX_SPREAD_PCT = 0.3           # skip if spread > 0.3% (tighter, was 0.5%)
 AGREEMENT_BONUS = 0.15         # bonus when TCN + XGBoost agree
 
 # Regime-based adjustments
 REGIME_EDGE_PENALTIES = {
-    "choppy": 0.25,            # need 25% more edge in chop
-    "high_vol": 0.15,          # need 15% more edge in high vol
+    "choppy": 0.30,            # need 30% more edge in chop (raised from 0.25)
+    "high_vol": 0.20,          # need 20% more edge in high vol (raised from 0.15)
     "trending_up": 0.0,        # no penalty in trends
     "trending_down": 0.0,
 }
