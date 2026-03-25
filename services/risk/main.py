@@ -44,10 +44,16 @@ CAPITAL = Gauge("risk_available_capital", "Available capital")
 class Signal(BaseModel):
     signal_id: str
     symbol: str
-    action: str = Field(..., pattern="^(buy|sell)$")
+    action: str
     amount: float
     price: float
     confidence: float = 0.5
+    edge_score: float = 0.0
+    side: str = "long"
+    regime: str = ""
+    timestamp: str = ""
+    vol_ratio: float = 1.0
+    reason: str = ""
 
 
 class Portfolio(BaseModel):
@@ -67,8 +73,8 @@ portfolio = Portfolio()
 async def validate_signal(signal: Signal) -> tuple[bool, str, float]:
     global portfolio
 
-    # Sells (position closes) bypass ALL risk limits — they must execute in full
-    if signal.action == "sell":
+    # Sells/exits bypass ALL risk limits — they must execute in full
+    if signal.action in ("sell", "short_exit"):
         return True, "approved", signal.amount
 
     # Check daily loss limit (buys only)
@@ -119,9 +125,14 @@ async def process_signal(signal_data: dict):
             validated = signal_data.copy()
             validated["amount"] = adjusted_amount
             await redis_client.publish("validated_signals", json.dumps(validated))
-            portfolio.last_trade_time = datetime.utcnow().isoformat()
+            # Only update cooldown timer for new entries (buys/shorts), not exits
+            if signal.action in ("buy", "short_entry"):
+                portfolio.last_trade_time = datetime.utcnow().isoformat()
             await save_portfolio()
-            logger.info("Signal approved", signal_id=signal.signal_id)
+            logger.info("Signal approved", signal_id=signal.signal_id,
+                         symbol=signal.symbol, action=signal.action,
+                         edge_score=round(signal.edge_score, 3),
+                         confidence=round(signal.confidence, 3))
         else:
             SIGNALS_REJECTED.labels(reason=reason).inc()
             logger.warning("Signal rejected", signal_id=signal.signal_id, reason=reason)
@@ -129,12 +140,84 @@ async def process_signal(signal_data: dict):
         logger.error("Error processing signal", error=str(e))
 
 
-async def listen_for_signals():
+# ── Signal Ranking Buffer ─────────────────────────────────────────────
+# Instead of FIFO processing (which picks alphabetically-first signals),
+# buffer all incoming signals for a window and pick the BEST one by
+# edge_score and confidence. This ensures the system always trades the
+# highest-conviction opportunity.
+SIGNAL_BUFFER_WINDOW_S = float(os.getenv("SIGNAL_BUFFER_WINDOW_S", 20))  # collect signals for 20s then pick best
+_signal_buffer: list = []
+_buffer_lock = asyncio.Lock()
+_buffer_flush_event = asyncio.Event()
+
+
+async def _collect_signals():
+    """Collect raw signals into the buffer continuously."""
     pubsub = redis_client.pubsub()
     await pubsub.subscribe("raw_signals")
     async for message in pubsub.listen():
         if message["type"] == "message":
-            await process_signal(json.loads(message["data"]))
+            try:
+                signal_data = json.loads(message["data"])
+                async with _buffer_lock:
+                    _signal_buffer.append(signal_data)
+                SIGNALS_RECEIVED.inc()
+            except Exception as e:
+                logger.error("Error buffering signal", error=str(e))
+
+
+async def _flush_buffer():
+    """Periodically flush the buffer: sort by quality and process the best signal."""
+    while True:
+        await asyncio.sleep(SIGNAL_BUFFER_WINDOW_S)
+
+        async with _buffer_lock:
+            if not _signal_buffer:
+                continue
+            batch = list(_signal_buffer)
+            _signal_buffer.clear()
+
+        # Separate sells (must execute immediately) from buy entries
+        sells = [s for s in batch if s.get("action") in ("sell", "short_exit")]
+        buys = [s for s in batch if s.get("action") not in ("sell", "short_exit")]
+
+        # Process ALL sell signals immediately (position exits are critical)
+        for sell_signal in sells:
+            await process_signal(sell_signal)
+
+        if not buys:
+            continue
+
+        # Rank buy signals by edge_score (primary) and confidence (secondary)
+        buys.sort(key=lambda s: (
+            float(s.get("edge_score", 0)),
+            float(s.get("confidence", 0)),
+        ), reverse=True)
+
+        # Log what we're choosing from
+        if len(buys) > 1:
+            best = buys[0]
+            worst = buys[-1]
+            logger.info("Signal ranker: picking best from buffer",
+                         buffer_size=len(buys),
+                         best_symbol=best.get("symbol"),
+                         best_edge=round(float(best.get("edge_score", 0)), 3),
+                         best_confidence=round(float(best.get("confidence", 0)), 3),
+                         worst_symbol=worst.get("symbol"),
+                         worst_edge=round(float(worst.get("edge_score", 0)), 3))
+
+        # Process signals in ranked order (best first)
+        # The validate_signal function handles cooldown/capital checks
+        for signal_data in buys:
+            await process_signal(signal_data)
+
+
+async def listen_for_signals():
+    """Start both the collector and the periodic flusher."""
+    await asyncio.gather(
+        _collect_signals(),
+        _flush_buffer(),
+    )
 
 
 async def load_portfolio():
