@@ -302,6 +302,11 @@ info.json
 config/trading_pairs.txt
 trading_pairs.txt
 
+# Prompt/strategy docs (local only)
+goblin_strategy_overhaul_prompt.md
+honest_advisor_persona.md
+SHORT_SELLING_IMPLEMENTATION.md
+
 # Keep dashboard source library tracked
 !dashboard/src/lib/
 !dashboard/src/lib/**

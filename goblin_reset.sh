@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Goblin Reset — Stop all services, wipe data, prepare fresh start
+# Goblin Reset — Stop all services, wipe runtime data, KEEP best models
 #
 # Usage:
 #   bash goblin_reset.sh          # interactive confirmation
@@ -10,6 +10,7 @@ set -euo pipefail
 
 ROOT="/home/coder/Goblin"
 LOGS="$ROOT/logs"
+MODELS="$ROOT/shared/models"
 ENV_FILE="$ROOT/config/trading.env"
 
 # Load config
@@ -24,11 +25,15 @@ echo "  ========================================"
 echo "  GOBLIN RESET"
 echo "  ========================================"
 echo "  This will:"
-echo "    1. Stop all running services"
-echo "    2. Flush Redis (all trading state)"
+echo "    1. Kill ALL Goblin processes"
+echo "    2. Flush Redis (trading state)"
 echo "    3. Truncate PostgreSQL tables"
-echo "    4. Clear logs and caches"
-echo "    5. Re-seed with \$${STARTING_CAPITAL} capital"
+echo "    4. Clear logs, caches, PID files"
+echo "    5. Clean old timestamped models (keep best/latest)"
+echo "    6. Kill Cloudflare tunnel"
+echo "    7. Re-seed \$${STARTING_CAPITAL} capital"
+echo ""
+echo "  PRESERVED: *_best.pt/json, *_latest.pt/json, *_metadata.json, registry.json"
 echo "  ========================================"
 echo ""
 
@@ -41,44 +46,52 @@ if [[ "${1:-}" != "--yes" && "${1:-}" != "-y" ]]; then
 fi
 
 # -----------------------------------------------------------
-# 1. STOP ALL SERVICES
+# 1. KILL ALL PROCESSES (aggressive)
 # -----------------------------------------------------------
 echo ""
-echo "  [1/5] Stopping services..."
+echo "  [1/7] Killing all Goblin processes..."
 
-# Stop dashboard if running
-DASHBOARD_PID=$(cat "$LOGS/dashboard.pid" 2>/dev/null || true)
-if [ -n "$DASHBOARD_PID" ] && kill -0 "$DASHBOARD_PID" 2>/dev/null; then
-    kill "$DASHBOARD_PID" 2>/dev/null || true
-    echo "    Stopped dashboard (PID $DASHBOARD_PID)"
-fi
-
-# Stop all services via PID files
+# Stop via PID files first
 for pidfile in "$LOGS"/*.pid; do
     [ -f "$pidfile" ] || continue
     name=$(basename "$pidfile" .pid)
-    pid=$(cat "$pidfile")
-    if kill -0 "$pid" 2>/dev/null; then
-        kill "$pid" 2>/dev/null || true
-        echo "    Stopped $name (PID $pid)"
+    pid=$(cat "$pidfile" 2>/dev/null || true)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+        echo "    Killed $name (PID $pid)"
     fi
     rm -f "$pidfile"
 done
 
-# Kill any stragglers (pkill is more reliable than lsof)
-pkill -f "uvicorn main:app" 2>/dev/null && echo "    Killed remaining uvicorn processes." || true
-pkill -f "continuous-learner/main.py" 2>/dev/null && echo "    Killed continuous learner." || true
-pkill -f "next start" 2>/dev/null && echo "    Killed remaining next processes." || true
-pkill -f "next-server" 2>/dev/null || true
+# Kill ALL stragglers by pattern — leave nothing running
+pkill -9 -f "uvicorn main:app" 2>/dev/null && echo "    Killed remaining uvicorn processes" || true
+pkill -9 -f "continuous-learner/main.py" 2>/dev/null && echo "    Killed continuous learner" || true
+pkill -9 -f "next start" 2>/dev/null && echo "    Killed Next.js processes" || true
+pkill -9 -f "next-server" 2>/dev/null || true
+pkill -9 -f "cloudflared.*tunnel" 2>/dev/null && echo "    Killed Cloudflare tunnel" || true
 
+# Wait for processes to die
 sleep 2
-echo "    All services stopped."
+
+# Verify all ports are free
+STILL_RUNNING=0
+for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010 8011 8080 3000; do
+    if lsof -ti:$port >/dev/null 2>&1; then
+        # Force kill anything on this port
+        lsof -ti:$port | xargs kill -9 2>/dev/null || true
+        echo "    Force-killed process on port $port"
+        STILL_RUNNING=$((STILL_RUNNING + 1))
+    fi
+done
+[ $STILL_RUNNING -gt 0 ] && sleep 1
+
+echo "    All processes killed."
 
 # -----------------------------------------------------------
 # 2. FLUSH REDIS
 # -----------------------------------------------------------
 echo ""
-echo "  [2/5] Flushing Redis..."
+echo "  [2/7] Flushing Redis..."
 
 if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning PING >/dev/null 2>&1; then
     redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning FLUSHALL >/dev/null 2>&1
@@ -90,14 +103,14 @@ if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-wa
         SET portfolio_state "$PORTFOLIO_JSON" >/dev/null 2>&1
     echo "    Seeded portfolio_state with \$${STARTING_CAPITAL}."
 else
-    echo "    [WARN] Redis unreachable — skipping. Make sure Redis is running."
+    echo "    [WARN] Redis not running — skip (will be set up on start)."
 fi
 
 # -----------------------------------------------------------
 # 3. TRUNCATE POSTGRESQL
 # -----------------------------------------------------------
 echo ""
-echo "  [3/5] Cleaning PostgreSQL..."
+echo "  [3/7] Cleaning PostgreSQL..."
 
 export PGPASSWORD="$POSTGRES_PASSWORD"
 if psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT 1" >/dev/null 2>&1; then
@@ -107,19 +120,21 @@ if psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRE
         BEGIN
             FOR t IN SELECT tablename FROM pg_tables
                      WHERE schemaname = 'public'
-                       AND tablename IN ('trade_history','portfolio_snapshots','signals','orders','ml_predictions')
+                       AND tablename IN ('trade_history','portfolio_snapshots','signals','orders','ml_predictions','ticks','candles','positions','sentiment_scores')
             LOOP
                 EXECUTE 'TRUNCATE TABLE ' || quote_ident(t) || ' CASCADE';
             END LOOP;
-        END\$\$;
 
-        INSERT INTO portfolio_snapshots (time, total_value, cash_balance, positions_value, daily_pnl)
-        VALUES (NOW(), $STARTING_CAPITAL, $STARTING_CAPITAL, 0, 0);
+            -- Re-seed portfolio snapshot if table exists
+            IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='portfolio_snapshots') THEN
+                EXECUTE format('INSERT INTO portfolio_snapshots (time, total_value, cash_balance, positions_value, daily_pnl) VALUES (NOW(), %s, %s, 0, 0)', $STARTING_CAPITAL, $STARTING_CAPITAL);
+            END IF;
+        END\$\$;
 SQL
-    echo "    Truncated trade_history, portfolio_snapshots, signals, orders, ml_predictions."
+    echo "    Truncated all trading tables."
     echo "    Seeded initial portfolio snapshot."
 else
-    echo "    [WARN] PostgreSQL unreachable — skipping."
+    echo "    [WARN] PostgreSQL not running — skip (will be set up on start)."
 fi
 unset PGPASSWORD
 
@@ -127,19 +142,16 @@ unset PGPASSWORD
 # 4. CLEAR LOGS AND CACHES
 # -----------------------------------------------------------
 echo ""
-echo "  [4/5] Clearing logs and caches..."
+echo "  [4/7] Clearing logs and caches..."
 
-# Truncate log files (keep the files, clear contents)
+mkdir -p "$LOGS"
 for logfile in "$LOGS"/*.log; do
     [ -f "$logfile" ] && > "$logfile"
 done
-echo "    Cleared all log files."
-
-# Remove PID files
 rm -f "$LOGS"/*.pid
-echo "    Removed PID files."
+echo "    Cleared all log files and PID files."
 
-# Remove Python caches (skip permission errors)
+# Python caches
 CLEANED=0
 while IFS= read -r -d '' dir; do
     rm -rf "$dir" 2>/dev/null || true
@@ -147,34 +159,103 @@ while IFS= read -r -d '' dir; do
 done < <(find "$ROOT/services" "$ROOT/scripts" -type d -name "__pycache__" -print0 2>/dev/null)
 echo "    Removed $CLEANED __pycache__ directories."
 
-# Remove tmp model files (keep trained models)
-find "$ROOT/shared/models" -name "*.tmp" -delete 2>/dev/null || true
-
 # -----------------------------------------------------------
-# 5. VERIFY CLEAN STATE
+# 5. CLEAN OLD MODELS — KEEP BEST & LATEST
 # -----------------------------------------------------------
 echo ""
-echo "  [5/5] Verifying clean state..."
+echo "  [5/7] Cleaning old models (keeping best & latest)..."
 
+# Files to KEEP:
+#   *_best.pt, *_latest.pt, *_metadata.json, registry.json, *.lock
+# Files to REMOVE:
+#   Timestamped copies like tcn_20260326_015110.pt, xgboost_20260326_*.json
+
+REMOVED_MODELS=0
+KEPT_MODELS=0
+
+# Remove timestamped .pt files (not best/latest)
+for f in "$MODELS"/*.pt; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f")
+    if [[ "$base" == *_best.pt ]] || [[ "$base" == *_latest.pt ]]; then
+        KEPT_MODELS=$((KEPT_MODELS + 1))
+    else
+        rm -f "$f"
+        REMOVED_MODELS=$((REMOVED_MODELS + 1))
+    fi
+done
+
+# Remove timestamped .json files (keep best/latest/metadata/registry)
+for f in "$MODELS"/*.json; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f")
+    if [[ "$base" == *_metadata.json ]] || [[ "$base" == "registry.json" ]] || [[ "$base" == *_best.json ]] || [[ "$base" == *_latest.json ]]; then
+        KEPT_MODELS=$((KEPT_MODELS + 1))
+    else
+        rm -f "$f"
+        REMOVED_MODELS=$((REMOVED_MODELS + 1))
+    fi
+done
+
+# Remove tmp and lock files
+find "$MODELS" -name "*.tmp" -delete 2>/dev/null || true
+rm -f "$MODELS/.cl_singleton.lock"
+
+echo "    Removed $REMOVED_MODELS old timestamped model files."
+echo "    Kept $KEPT_MODELS best/latest model files."
+
+# Show what's preserved
+echo "    Preserved models:"
+for f in "$MODELS"/*_best.pt "$MODELS"/*_latest.pt "$MODELS"/*_best.json "$MODELS"/*_latest.json; do
+    [ -f "$f" ] && printf "      %s (%s)\n" "$(basename "$f")" "$(du -sh "$f" | cut -f1)"
+done
+
+# -----------------------------------------------------------
+# 6. KILL CLOUDFLARE TUNNEL
+# -----------------------------------------------------------
+echo ""
+echo "  [6/7] Stopping Cloudflare tunnel..."
+pkill -f "cloudflared" 2>/dev/null && echo "    Cloudflare tunnel stopped." || echo "    No tunnel running."
+
+# -----------------------------------------------------------
+# 7. VERIFY CLEAN STATE
+# -----------------------------------------------------------
+echo ""
+echo "  [7/7] Verifying clean state..."
+
+# Check Redis
 REDIS_KEYS=0
 if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning PING >/dev/null 2>&1; then
     REDIS_KEYS=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning DBSIZE 2>/dev/null | grep -oP '\d+' || echo "0")
 fi
-echo "    Redis keys: $REDIS_KEYS (should be 1 — portfolio_state)"
+echo "    Redis keys: $REDIS_KEYS (expected: 1 — portfolio_state)"
 
+# Check all ports free
 RUNNING=0
-for p in 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010 8011 8080; do
-    curl -sf -o /dev/null --max-time 1 "http://localhost:$p/health" 2>/dev/null && RUNNING=$((RUNNING + 1))
+for p in 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010 8011 8080 3000; do
+    if curl -sf -o /dev/null --max-time 1 "http://localhost:$p/health" 2>/dev/null; then
+        RUNNING=$((RUNNING + 1))
+        echo "    [WARN] Port $p still responding!"
+    fi
 done
-echo "    Services still responding: $RUNNING (should be 0)"
+echo "    Services still responding: $RUNNING (expected: 0)"
+
+# Check GPU is free
+GPU_PROCS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | wc -l)
+echo "    GPU processes: $GPU_PROCS (expected: 0)"
+
+# Model summary
+MODEL_COUNT=$(find "$MODELS" \( -name "*_best.pt" -o -name "*_latest.pt" -o -name "*_best.json" -o -name "*_latest.json" \) 2>/dev/null | wc -l)
+echo "    Best/latest models preserved: $MODEL_COUNT"
 
 echo ""
 echo "  ========================================"
 echo "  RESET COMPLETE"
 echo "  ========================================"
-echo "  Starting capital: \$${STARTING_CAPITAL}"
+echo "  Capital:  \$${STARTING_CAPITAL}"
+echo "  Models:   $MODEL_COUNT best/latest preserved"
+echo "  State:    All trading data wiped"
 echo ""
-echo "  To start the system:"
-echo "    bash $ROOT/goblin_start.sh"
+echo "  To start: bash $ROOT/goblin_start.sh"
 echo "  ========================================"
 echo ""
