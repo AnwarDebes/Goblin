@@ -153,11 +153,29 @@ async def train(args):
     for fname, score in sorted_imp[:15]:
         print(f"  {fname:30s} {score:.2f}")
 
-    # Save model
-    version = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    save_path = os.path.join(MODEL_DIR, f"xgboost_{version}.json")
+    # Save model — latest + versioned copy
     os.makedirs(MODEL_DIR, exist_ok=True)
-    booster.save_model(save_path)
+    latest_path = os.path.join(MODEL_DIR, "xgboost_latest.json")
+    booster.save_model(latest_path)
+
+    version = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    versioned_path = os.path.join(MODEL_DIR, f"xgboost_{version}.json")
+    booster.save_model(versioned_path)
+
+    # Update best if this is the best accuracy so far
+    best_path = os.path.join(MODEL_DIR, "xgboost_best.json")
+    best_meta_path = os.path.join(MODEL_DIR, "xgboost_metadata.json")
+    existing_best_acc = 0.0
+    if os.path.exists(best_meta_path):
+        try:
+            import json as _json
+            with open(best_meta_path) as f:
+                existing_best_acc = _json.load(f).get("accuracy", 0.0)
+        except Exception:
+            pass
+    if test_acc > existing_best_acc:
+        booster.save_model(best_path)
+        logger.info("New best XGBoost model", accuracy=f"{test_acc:.4f}")
 
     # Register
     registry = ModelRegistry(registry_dir=MODEL_DIR)
@@ -165,10 +183,10 @@ async def train(args):
         model_name="xgboost",
         version=version,
         metrics={"accuracy": round(test_acc, 4)},
-        path=save_path,
+        path=latest_path,
     )
 
-    logger.info("Training complete", path=save_path, accuracy=f"{test_acc:.4f}")
+    logger.info("Training complete", path=latest_path, accuracy=f"{test_acc:.4f}")
     await loader.close()
 
 
