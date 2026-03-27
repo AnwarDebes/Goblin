@@ -1183,6 +1183,20 @@ def train_xgboost_rl(
     while len(xgb_versions) > 3:
         os.remove(xgb_versions.pop(0))
 
+    # Update best model if accuracy improved
+    best_path = output_path / "xgboost_best.json"
+    existing_best_acc = 0.0
+    meta_path = output_path / "xgboost_metadata.json"
+    if meta_path.exists():
+        try:
+            with open(meta_path) as f:
+                existing_best_acc = json.load(f).get("accuracy", 0.0)
+        except Exception:
+            pass
+    if accuracy > existing_best_acc or not best_path.exists():
+        model.save_model(str(best_path))
+        logger.info("New best XGBoost model", accuracy=accuracy)
+
     metadata = {
         "model_type": "xgboost",
         "trained_at": datetime.now(timezone.utc).isoformat(),

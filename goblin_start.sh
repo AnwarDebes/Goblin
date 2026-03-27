@@ -69,7 +69,6 @@ pkill -9 -f "uvicorn main:app" 2>/dev/null || true
 pkill -9 -f "continuous-learner/main.py" 2>/dev/null || true
 pkill -9 -f "next start" 2>/dev/null || true
 pkill -9 -f "next-server" 2>/dev/null || true
-pkill -9 -f "cloudflared.*tunnel" 2>/dev/null || true
 
 # Force-kill anything on our ports
 for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010 8011 8080 3000; do
@@ -85,10 +84,11 @@ echo ""
 echo "  [PHASE 1] Installing infrastructure..."
 
 # --- Python 3 ---
+export DEBIAN_FRONTEND=noninteractive
 if ! command -v python3 &>/dev/null; then
     echo "    Installing Python 3..."
-    sudo apt-get update -qq
-    sudo apt-get install -y -qq python3 python3-pip python3-venv python3-dev > /dev/null 2>&1
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 python3-pip python3-venv python3-dev > /dev/null 2>&1
     echo "    Python 3 installed: $(python3 --version)"
 else
     echo "    Python 3 ........... $(python3 --version 2>&1 | head -1)"
@@ -97,7 +97,7 @@ fi
 # --- Redis ---
 if ! command -v redis-server &>/dev/null; then
     echo "    Installing Redis..."
-    sudo apt-get install -y -qq redis-server > /dev/null 2>&1
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq redis-server > /dev/null 2>&1
 fi
 if ! redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning PING >/dev/null 2>&1; then
     echo "    Configuring Redis..."
@@ -128,7 +128,7 @@ fi
 # --- PostgreSQL + TimescaleDB ---
 if ! command -v psql &>/dev/null; then
     echo "    Installing PostgreSQL..."
-    sudo apt-get install -y -qq postgresql postgresql-contrib > /dev/null 2>&1
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql postgresql-contrib > /dev/null 2>&1
 fi
 if ! sudo service postgresql status >/dev/null 2>&1; then
     echo "    Starting PostgreSQL..."
@@ -162,9 +162,9 @@ if [ "$HAS_TIMESCALE" = "0" ]; then
     sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys E7391C94080429FF >/dev/null 2>&1
     sudo apt-key export 080429FF 2>/dev/null | sudo gpg --dearmor -o /usr/share/keyrings/timescaledb.gpg --yes 2>/dev/null
     echo "deb [signed-by=/usr/share/keyrings/timescaledb.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ ${DISTRO} main" | sudo tee /etc/apt/sources.list.d/timescaledb.list >/dev/null
-    sudo apt-get update -qq 2>/dev/null
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null
 
-    sudo apt-get install -y -qq "timescaledb-2-postgresql-${PG_VERSION}" 2>&1 | tail -3
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "timescaledb-2-postgresql-${PG_VERSION}" 2>&1 | tail -3
     if [ $? -ne 0 ]; then
         echo "    [FAIL] TimescaleDB installation failed!"
         exit 1
@@ -532,6 +532,8 @@ echo "  ╚═══════════════════════
 echo ""
 echo "  Dashboard:  http://localhost:3000"
 echo "  API:        http://localhost:8080"
+
+echo ""
 echo "  Logs:       $LOGS/"
 echo ""
 echo "  To stop:    bash $ROOT/goblin_reset.sh"

@@ -30,8 +30,7 @@ echo "    2. Flush Redis (trading state)"
 echo "    3. Truncate PostgreSQL tables"
 echo "    4. Clear logs, caches, PID files"
 echo "    5. Clean old timestamped models (keep best/latest)"
-echo "    6. Kill Cloudflare tunnel"
-echo "    7. Re-seed \$${STARTING_CAPITAL} capital"
+echo "    6. Re-seed \$${STARTING_CAPITAL} capital"
 echo ""
 echo "  PRESERVED: *_best.pt/json, *_latest.pt/json, *_metadata.json, registry.json"
 echo "  ========================================"
@@ -68,7 +67,6 @@ pkill -9 -f "uvicorn main:app" 2>/dev/null && echo "    Killed remaining uvicorn
 pkill -9 -f "continuous-learner/main.py" 2>/dev/null && echo "    Killed continuous learner" || true
 pkill -9 -f "next start" 2>/dev/null && echo "    Killed Next.js processes" || true
 pkill -9 -f "next-server" 2>/dev/null || true
-pkill -9 -f "cloudflared.*tunnel" 2>/dev/null && echo "    Killed Cloudflare tunnel" || true
 
 # Wait for processes to die
 sleep 2
@@ -211,17 +209,10 @@ for f in "$MODELS"/*_best.pt "$MODELS"/*_latest.pt "$MODELS"/*_best.json "$MODEL
 done
 
 # -----------------------------------------------------------
-# 6. KILL CLOUDFLARE TUNNEL
+# 6. VERIFY CLEAN STATE
 # -----------------------------------------------------------
 echo ""
-echo "  [6/7] Stopping Cloudflare tunnel..."
-pkill -f "cloudflared" 2>/dev/null && echo "    Cloudflare tunnel stopped." || echo "    No tunnel running."
-
-# -----------------------------------------------------------
-# 7. VERIFY CLEAN STATE
-# -----------------------------------------------------------
-echo ""
-echo "  [7/7] Verifying clean state..."
+echo "  [6/6] Verifying clean state..."
 
 # Check Redis
 REDIS_KEYS=0
