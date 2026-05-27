@@ -13,7 +13,15 @@ from services.strategy.horizon_guard import (
 )
 
 
-def test_horizon_minutes_is_15():
+def test_horizon_minutes_matches_training_target():
+    """Regression canary: HORIZON_MINUTES must match the offline training target
+    `future_return_15m` in services/prediction/training/data_loader.py:148.
+
+    If the training target changes (e.g. to future_return_30m), this test
+    must fail until HORIZON_MINUTES is updated in lockstep. Do NOT just
+    change the asserted value to silence the test — verify the training
+    target was actually changed first.
+    """
     assert HORIZON_MINUTES == 15
 
 
@@ -23,6 +31,16 @@ def test_crash_always_fires_even_at_one_second():
 
 def test_hard_stop_always_fires_even_at_one_second():
     assert should_block_exit_for_horizon(hold_seconds=1, reason="hard_stop") is False
+
+
+def test_crash_allowed_after_horizon_too():
+    """Bypass invariant: crash exits fire regardless of hold time, not just early."""
+    assert should_block_exit_for_horizon(hold_seconds=15 * 60 + 1, reason="crash") is False
+
+
+def test_hard_stop_allowed_after_horizon_too():
+    """Bypass invariant: hard_stop exits fire regardless of hold time."""
+    assert should_block_exit_for_horizon(hold_seconds=15 * 60 + 1, reason="hard_stop") is False
 
 
 def test_bypass_reasons_constant_matches_behavior():
@@ -54,6 +72,16 @@ def test_stale_exit_blocked_in_early_window():
 
 def test_signal_sell_blocked_in_early_window():
     assert should_block_exit_for_horizon(hold_seconds=120, reason="signal_sell") is True
+
+
+def test_stale_exit_allowed_after_horizon():
+    """Symmetric with test_stale_exit_blocked_in_early_window."""
+    assert should_block_exit_for_horizon(hold_seconds=15 * 60, reason="stale") is False
+
+
+def test_signal_sell_allowed_after_horizon():
+    """Symmetric with test_signal_sell_blocked_in_early_window."""
+    assert should_block_exit_for_horizon(hold_seconds=15 * 60, reason="signal_sell") is False
 
 
 def test_unknown_reason_treated_as_soft_exit():

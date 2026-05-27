@@ -20,7 +20,7 @@ HORIZON_MINUTES: int = 15
 
 # Exits that bypass the horizon guard — these are catastrophic/safety triggers
 # and must fire as fast as possible regardless of model horizon.
-BYPASS_REASONS: frozenset = frozenset({"crash", "hard_stop"})
+BYPASS_REASONS: frozenset[str] = frozenset({"crash", "hard_stop"})
 
 
 def should_block_exit_for_horizon(hold_seconds: float, reason: str, pnl_pct: float = 0.0) -> bool:
