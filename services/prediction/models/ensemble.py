@@ -100,10 +100,15 @@ class EnsembleCombiner:
 
     # Per-variant weights within the TCN allocation (sum to 1.0)
     TCN_VARIANT_WEIGHTS = {
-        "tcn_micro":  0.10,
-        "tcn_short":  0.20,
-        "tcn_medium": 0.40,  # Primary model gets highest weight
-        "tcn_long":   0.30,
+        # 2026-05-27 horizon pivot: shift weight toward longer-context variants.
+        # All variants train on future_return_15m, but tcn_long sees 120 timesteps
+        # of context vs tcn_micro's 15 — more context => more stable signal at the
+        # 15-min horizon. Tcn_micro and tcn_short are downweighted but kept for
+        # ensemble diversity, not removed.
+        "tcn_micro":  0.05,
+        "tcn_short":  0.10,
+        "tcn_medium": 0.25,
+        "tcn_long":   0.60,
     }
 
     def combine(
