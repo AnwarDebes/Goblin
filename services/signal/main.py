@@ -35,7 +35,7 @@ from vol_sizing import calculate_vol_targeted_size, SizingResult
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 0.10))  # Low: ensemble averaging dilutes confidence; edge gate provides quality filter
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 0.25))  # 2026-05-24: raised from 0.10 — 50% win rate at 0.10 isn't worth the trade cost. Higher bar reduces false signals.
 STARTING_CAPITAL = float(os.getenv("STARTING_CAPITAL", 1000.0))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", 0.50))
 MIN_POSITION_USD = float(os.getenv("MIN_POSITION_USD", 1.0))
@@ -84,6 +84,8 @@ class Position(BaseModel):
     side: str
     amount: float
     entry_price: float
+    entry_time: Optional[str] = None  # 2026-05-25: added for proper sell-too-early hold-time guard
+    model_config = {"extra": "ignore"}  # tolerate extra fields from position service's richer model
 
 
 # Per-symbol graduated cooldown after losing trades (prevents re-entering losers)
@@ -282,15 +284,39 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
         action = "buy"
         signal_side = "long"
     elif normalized_direction == "sell" and has_position and current_side == "long":
-        # v14: Sell exits require higher confidence AND minimum hold time to prevent whipsaws.
-        # The position manager's AI pressure system handles gradual exits; direct sell signals
-        # should only fire on strong conviction (high confidence) or after giving the trade time.
+        # v14 + 2026-05-25: multi-layer exit guard to prevent BTC/ETH whipsaw.
+        # Forensic data: with high-conf (0.8+) model sells firing repeatedly on majors,
+        # we lost ~$0.04/trade in fees on signal-driven sells at near-zero PnL.
         pos = current_positions[symbol]
-        hold_seconds = (datetime.utcnow() - pos.opened_at).total_seconds() if hasattr(pos, 'opened_at') and pos.opened_at else 999
-        min_hold_for_sell = 180  # 3 minutes minimum hold before allowing sell signal
-        min_sell_confidence = 0.25  # Higher bar for sell exits to prevent whipsaw
+        hold_seconds = 999
+        if pos.entry_time:
+            try:
+                et = datetime.fromisoformat(pos.entry_time.replace("Z", "+00:00").replace("+00:00", ""))
+                hold_seconds = (datetime.utcnow() - et).total_seconds()
+            except Exception:
+                hold_seconds = 999
+        min_hold_for_sell = 180        # 3 minutes minimum hold
+        min_sell_confidence = 0.55     # entry-equivalent threshold
 
-        if hold_seconds < min_hold_for_sell and confidence < 0.40:
+        # Compute current PnL — if position is in the noise band, defer to AI exit pressure
+        # and smart_stop (in position service) which handle trailing/profit-lock properly.
+        # Hard floor at -1.2% will catch real losers; AI exit will catch real winners.
+        try:
+            current_pnl_pct = (current_price - pos.entry_price) / pos.entry_price
+        except Exception:
+            current_pnl_pct = 0.0
+
+        # NOISE BAND GUARD: if loss < 0.2% and gain < 0.5%, don't exit on signal —
+        # let smart_stop/profit-lock handle it. Only fire signal_sell at clearer states:
+        # already deep loss (-0.2%+) or clear win (+0.5%+).
+        if -0.002 < current_pnl_pct < 0.005:
+            SIGNALS_SKIPPED.labels(reason="sell_noise_band").inc()
+            logger.info("Sell signal blocked — PnL in noise band (asymmetric-fix)",
+                         symbol=symbol, pnl_pct=f"{current_pnl_pct:.4%}",
+                         confidence=round(confidence, 3))
+            return None
+
+        if hold_seconds < min_hold_for_sell and confidence < 0.65:
             SIGNALS_SKIPPED.labels(reason="sell_too_early").inc()
             logger.info("Sell signal blocked — position too young",
                          symbol=symbol, hold_seconds=round(hold_seconds),
@@ -409,8 +435,8 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
     models_agree = agreement_bonus > 0
 
     # In extreme fear, buying is actually the contrarian play.
-    # Temperature-scaled models produce lower confidence values — threshold matches.
-    fg_buy_threshold = 0.10 if fg_zone_signal == "extreme_fear" else 0.10
+    # 2026-05-24: thresholds raised in lockstep with CONFIDENCE_THRESHOLD change (0.10→0.25)
+    fg_buy_threshold = 0.20 if fg_zone_signal == "extreme_fear" else 0.25
     if action == "buy" and fg_zone_signal in ("extreme_fear", "fear") and confidence < fg_buy_threshold:
         SIGNALS_SKIPPED.labels(reason="fg_low_confidence_fear").inc()
         logger.info("F&G filter blocked low-confidence long in fear zone",

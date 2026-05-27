@@ -59,10 +59,11 @@ REGIME_STOP_MULTS = {
 }
 
 # Hard floor: absolute maximum loss regardless of other factors.
-# Position manager has a 3% hard stop. These are backup disaster limits only.
-# Research: tight floors (1-2%) destroy edge in crypto where 2% swings are normal noise.
-HARD_FLOOR_LOSS_PCT_NORMAL = 0.04    # 4% — backup behind position manager's 3%
-HARD_FLOOR_LOSS_PCT_HIGH_VOL = 0.03  # 3% — tighter in high vol
+# 2026-05-24: forensic analysis of 172-trade session showed win/loss size ratio of 0.60
+# (avg win $0.35, avg loss $0.59). Losses were running to 4% while wins were capped
+# near breakeven. Tightening to symmetrize with the typical win-exit point (~0.4-0.5%).
+HARD_FLOOR_LOSS_PCT_NORMAL = 0.012   # 1.2% — match typical win-exit magnitude
+HARD_FLOOR_LOSS_PCT_HIGH_VOL = 0.010 # 1.0% — even tighter in high vol
 
 # Minimum stop: dynamic — used only for trailing after profit
 # v13: Widened trailing to let winners breathe. 0.3% was getting shaken out by noise.
@@ -79,20 +80,23 @@ YOUNG_POSITION_MINUTES = 1.0     # 1 min guard (was 2)
 # Momentum override: widen stop when position shows strong upward momentum
 MOMENTUM_OVERRIDE_WIDEN = 1.2    # 20% wider stop when momentum is strong (was 40%)
 
-# Profit lock thresholds — protect big winners, but let trades breathe.
-# Old values (0.5% breakeven) locked profits too early, causing premature exits on winners.
-PROFIT_LOCK_BREAKEVEN_THRESHOLD = 0.02   # 2%+ profit → stop at breakeven
-PROFIT_LOCK_TIER1_THRESHOLD = 0.03       # 3%+ profit → lock 1% profit
-PROFIT_LOCK_TIER1_FLOOR = 0.01           # Minimum locked profit at tier 1
-PROFIT_LOCK_TIER2_THRESHOLD = 0.05       # 5%+ profit → lock 2.5% profit
-PROFIT_LOCK_TIER2_FLOOR = 0.025          # Minimum locked profit at tier 2
-PROFIT_LOCK_TIER3_THRESHOLD = 0.08       # 8%+ profit → lock 5% profit
-PROFIT_LOCK_TIER3_FLOOR = 0.05           # Minimum locked profit at tier 3
+# Profit lock thresholds — protect winners early since avg wins were only 0.4%.
+# 2026-05-24: thresholds rescaled to match the actual profit distribution observed
+# in production (most "wins" exit in the 0.3-0.8% range, very few reached 2%+).
+# Locking breakeven at 0.6% peak preserves more wins that otherwise reverse to losses.
+PROFIT_LOCK_BREAKEVEN_THRESHOLD = 0.006  # 0.6%+ profit → stop at breakeven
+PROFIT_LOCK_TIER1_THRESHOLD = 0.012      # 1.2%+ profit → lock 0.5% profit
+PROFIT_LOCK_TIER1_FLOOR = 0.005          # Minimum locked profit at tier 1
+PROFIT_LOCK_TIER2_THRESHOLD = 0.020      # 2.0%+ profit → lock 1% profit
+PROFIT_LOCK_TIER2_FLOOR = 0.010          # Minimum locked profit at tier 2
+PROFIT_LOCK_TIER3_THRESHOLD = 0.035      # 3.5%+ profit → lock 2% profit
+PROFIT_LOCK_TIER3_FLOOR = 0.020          # Minimum locked profit at tier 3
 
 # Patience exit: only for positions stuck losing for extended time.
-# AI exit pressure handles normal adverse trades. This is for forgotten positions.
-PATIENCE_MAX_MINUTES = 60.0      # After 60 min at a loss with no recovery
-PATIENCE_MIN_LOSS_PCT = 0.015    # Cut if losing > 1.5% after patience period
+# 2026-05-24: tightened — 60min/1.5% allowed losers to drift too long.
+# New: 15min/0.8% — losers get cut earlier, preventing slow-bleed asymmetry.
+PATIENCE_MAX_MINUTES = 15.0      # After 15 min at a loss with no recovery
+PATIENCE_MIN_LOSS_PCT = 0.008    # Cut if losing > 0.8% after patience period
 
 # Volatility-adaptive trailing: scale trailing stop width by recent vol
 VOL_TRAIL_WIDEN_THRESHOLD = 1.5  # If vol_ratio > 1.5, widen trailing stop

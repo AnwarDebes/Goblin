@@ -544,12 +544,12 @@ async def update_prices():
                         if pnl_pct < pos.lowest_pnl_pct:
                             pos.lowest_pnl_pct = pnl_pct
 
-                        # Exit at -3% — the disaster backstop. Research from 567K backtests:
-                        # tight stops (0.75%) destroy edge by exiting on noise. Crypto routinely
-                        # swings 1-2% intraday. Let the AI exit pressure system handle normal exits;
-                        # this is only for capital preservation on genuine adverse moves.
-                        if pnl_pct < -0.03:
-                            logger.info("HARD STOP-LOSS EXIT — position down >3%",
+                        # 2026-05-24: tightened from -3% to -2%. The win/loss ratio analysis
+                        # (50% win rate, ratio 0.60) showed losers running to -3% while wins
+                        # capped at ~0.5%. smart_stop now fires at -1.2% (NORMAL hard floor);
+                        # this -2% acts as a true emergency backstop if smart_stop is bypassed.
+                        if pnl_pct < -0.02:
+                            logger.info("HARD STOP-LOSS EXIT — position down >2%",
                                         symbol=symbol,
                                         pnl_pct=f"{pnl_pct:.2%}",
                                         hold_min=f"{hold_time_minutes:.0f}",
@@ -559,10 +559,10 @@ async def update_prices():
                             continue
 
                         # ── STALE POSITION EXIT ──
-                        # Dead capital: if held >90 min and PnL near zero, exit to redeploy.
-                        # 20min was too aggressive — many winning trades need 30-60min to develop.
-                        # AI exit pressure handles the "this trade isn't working" case faster.
-                        if hold_time_minutes > 90 and -0.005 < pnl_pct < 0.003:
+                        # 2026-05-24: tightened from 90min to 30min. Smaller universe (3 pairs)
+                        # plus higher confidence threshold means signals are rarer — no need to
+                        # let dead positions tie up capital for 90 min.
+                        if hold_time_minutes > 30 and -0.005 < pnl_pct < 0.003:
                             logger.info("STALE POSITION EXIT — near-zero PnL after 90m",
                                         symbol=symbol, pnl_pct=f"{pnl_pct:.2%}",
                                         hold_min=f"{hold_time_minutes:.0f}",
@@ -828,6 +828,17 @@ async def listen_for_prediction_exits():
             # where the fee to exit costs more than just holding.
             if should_exit and -0.002 < pnl_pct < 0:
                 logger.info("AI exit BLOCKED — loss smaller than exit fees",
+                            symbol=symbol, pnl_pct=f"{pnl_pct:.4%}", pressure=f"{pressure:.3f}")
+                exit_tracker.reset(symbol)
+                should_exit = False
+
+            # 2026-05-25: symmetric block for tiny GAINS. Without this, AI was clipping
+            # winners at +0.1-0.3% (after fees ~0%) while letting losses run to hard floor.
+            # Forensic data: avg win was $0.35 vs avg loss $0.59 = ratio 0.60. Letting
+            # winners grow past +0.4% before AI exit pressure kicks in helps reach the
+            # +0.6% breakeven profit lock instead of bleeding out on exit fees.
+            if should_exit and 0 <= pnl_pct < 0.004:
+                logger.info("AI exit BLOCKED — gain too small to clip (asymmetric-fix)",
                             symbol=symbol, pnl_pct=f"{pnl_pct:.4%}", pressure=f"{pressure:.3f}")
                 exit_tracker.reset(symbol)
                 should_exit = False
