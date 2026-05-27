@@ -74,7 +74,11 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Training schedule
 TRAIN_INTERVAL_MINUTES = int(os.getenv("TRAIN_INTERVAL_MINUTES", "1"))  # v5: 1min — V100 should NEVER idle
-REWARD_LOOKBACK_CANDLES = 2  # v2: 2 candles = 10 minutes (was 5 candles = 25min)
+# 2026-05-27 horizon pivot: align CL reward horizon with the offline training target.
+# Offline TCN trains on future_return_15m (data_loader.py:148). Online refinement
+# should target the same horizon so reward gradient and training gradient agree.
+# 5-minute candles × 3 = 15 minutes. If candle interval changes, update accordingly.
+REWARD_LOOKBACK_CANDLES = 3  # 3 candles × 5 min = 15 minutes (matches HORIZON_MINUTES)
 MIN_SAMPLES_FOR_TRAINING = 500
 LEARNING_RATE_TCN = 0.001   # v5: higher initial LR for fast adaptation (was 0.0003)
 LEARNING_RATE_XGB = 0.03
