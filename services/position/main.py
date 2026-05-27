@@ -563,40 +563,49 @@ async def update_prices():
                             continue
 
                         # ── STALE POSITION EXIT ──
-                        # 2026-05-24: tightened from 90min to 30min. Smaller universe (3 pairs)
-                        # plus higher confidence threshold means signals are rarer — no need to
-                        # let dead positions tie up capital for 90 min.
-                        if hold_time_minutes > 30 and -0.005 < pnl_pct < 0.003:
-                            logger.info("STALE POSITION EXIT — near-zero PnL after 90m",
+                        # Horizon-aware: a position only counts as "stale" if it's been
+                        # held past 2× the model's prediction horizon AND is in the noise
+                        # band. Previously 30min hard-coded; now 30 min for the 15-min
+                        # horizon (= 2× horizon), still gives positions time to develop.
+                        position_horizon = getattr(pos, "horizon_minutes", 15)
+                        stale_threshold = max(30, position_horizon * 2)
+                        if hold_time_minutes > stale_threshold and -0.005 < pnl_pct < 0.003:
+                            logger.info("STALE POSITION EXIT — near-zero PnL after horizon×2",
                                         symbol=symbol, pnl_pct=f"{pnl_pct:.2%}",
                                         hold_min=f"{hold_time_minutes:.0f}",
+                                        stale_min=stale_threshold,
                                         profit_usd=f"{pos.unrealized_pnl:.2f}")
                             smart_stop_triggered.append((symbol, f"stale_exit_{hold_time_minutes:.0f}m_pnl_{pnl_pct:.2%}"))
                             await redis_client.hset("positions", symbol, pos.model_dump_json())
                             continue
 
                         # ── MOMENTUM TAKE-PROFIT (profitable positions) ──
-                        # With 3% hard stop, we need winners to run bigger to maintain R:R.
-                        # Minimum 1.5% profit before considering momentum exit.
-                        if pnl_pct >= 0.015:  # At least 1.5% profit
+                        # Horizon-gated: don't clip winners before the prediction window
+                        # closes. The model predicted a 15-min forward return; if the
+                        # position is up 1.5% at minute 3, the model's prediction is
+                        # likely to deliver more — don't take profit prematurely.
+                        position_horizon = getattr(pos, "horizon_minutes", 15)
+                        horizon_elapsed = hold_time_minutes >= position_horizon
+
+                        if pnl_pct >= 0.015 and horizon_elapsed:  # At least 1.5% profit AND past horizon
                             # Momentum deceleration — only exit if momentum truly died
                             momentum_decelerating = (
-                                pos.momentum_peak > 0.001 and   # Had strong momentum (0.1%+ in 3s)
-                                recent_momentum <= 0 and        # Momentum is now NEGATIVE
-                                pnl_pct >= 0.015                # At least 1.5% profit
+                                pos.momentum_peak > 0.001 and
+                                recent_momentum <= 0 and
+                                pnl_pct >= 0.015
                             )
 
                             # Profit giveback: only if gave back substantial profit
                             profit_giveback = pos.peak_pnl_pct - pnl_pct
                             fast_giveback = (
-                                pos.peak_pnl_pct >= 0.03 and    # Had 3%+ peak profit before considering giveback
-                                profit_giveback >= pos.peak_pnl_pct * 0.40  # Gave back 40% of peak
+                                pos.peak_pnl_pct >= 0.03 and
+                                profit_giveback >= pos.peak_pnl_pct * 0.40
                                 and recent_momentum <= 0
                             )
 
                             if momentum_decelerating or fast_giveback:
                                 reason = "momentum_decel" if momentum_decelerating else "profit_giveback"
-                                logger.info("MOMENTUM TAKE-PROFIT triggered",
+                                logger.info("MOMENTUM TAKE-PROFIT triggered (post-horizon)",
                                             symbol=symbol,
                                             reason=reason,
                                             pnl_pct=f"{pnl_pct:.2%}",
