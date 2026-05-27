@@ -295,7 +295,7 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
                 hold_seconds = (datetime.utcnow() - et).total_seconds()
             except Exception:
                 hold_seconds = 999
-        min_hold_for_sell = 180        # 3 minutes minimum hold
+        min_hold_for_sell = max(180, 15 * 60)  # max(3min legacy, 15min horizon) — horizon wins
         min_sell_confidence = 0.55     # entry-equivalent threshold
 
         # Compute current PnL — if position is in the noise band, defer to AI exit pressure
