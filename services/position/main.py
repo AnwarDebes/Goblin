@@ -80,6 +80,7 @@ class Position(BaseModel):
     price_history: list = []     # Last N prices for momentum calculation
     momentum_peak: float = 0    # Peak momentum value during the move
     lowest_pnl_pct: float = 0   # v9: Track deepest loss for recovery bounce detection
+    horizon_minutes: int = 15   # Model's forecast horizon at entry; gates soft exits
 
 
 class ExitPressureTracker:
@@ -286,9 +287,11 @@ async def handle_filled_order(order: dict):
     else:
         # Opening new position — AI controls all exits, no hardcoded thresholds
         side = "short" if order_side == "short_entry" else "long"
+        horizon = order.get("horizon_minutes", 15)
         positions[symbol] = Position(
             symbol=symbol, side=side, entry_price=order_price,
             current_price=order_price, amount=filled_amount, opened_at=datetime.utcnow().isoformat(),
+            horizon_minutes=horizon,
         )
         # Reset exit pressure tracking for this symbol
         exit_tracker.reset(symbol)
