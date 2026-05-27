@@ -84,6 +84,7 @@ class PredictionResponse(BaseModel):
     score: float
     current_price: float
     mode: str  # "ml" or "legacy"
+    horizon_minutes: int = 15  # Model's forward-looking forecast window (matches data_loader.py primary target)
     breakdown: Dict[str, float] = {}
     tcn_direction: Optional[str] = None
     tcn_confidence: Optional[float] = None
