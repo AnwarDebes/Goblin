@@ -38,6 +38,7 @@ from prometheus_client import Gauge, Counter, generate_latest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from strategy.regime import RegimeState
 from strategy.adaptive_exit import compute_adaptive_exit_params, explain_exit
+from strategy.horizon_guard import should_block_exit_for_horizon, HORIZON_MINUTES
 from strategy.smart_stop import compute_smart_stop
 
 # Configuration
@@ -816,6 +817,21 @@ async def listen_for_prediction_exits():
                 decay_rate=p_decay, pressure_threshold=p_threshold,
                 min_consecutive_sells=p_min_consec, vol_urgency=p_vol_urgency,
             )
+
+            # HORIZON GUARD: don't close on AI pressure until the model's prediction
+            # window has elapsed. The model predicts future_return_15m — closing in
+            # 4 seconds because two consecutive 2-sec predictions disagree throws
+            # away the model's forward-looking edge entirely. Catastrophic exits
+            # (crash, hard_stop) bypass this guard and fire from update_prices() instead.
+            hold_seconds_for_guard = hold_time_minutes * 60
+            position_horizon = getattr(pos, "horizon_minutes", HORIZON_MINUTES)
+            if should_exit and hold_seconds_for_guard < position_horizon * 60:
+                logger.info("AI exit BLOCKED — within prediction horizon",
+                            symbol=symbol, hold_seconds=f"{hold_seconds_for_guard:.0f}",
+                            horizon_seconds=position_horizon * 60,
+                            pnl_pct=f"{pnl_pct:.4%}", pressure=f"{pressure:.3f}")
+                exit_tracker.reset(symbol)
+                should_exit = False
 
             if direction in ("sell", "strong_sell"):
                 state = exit_tracker.get_state(symbol)
