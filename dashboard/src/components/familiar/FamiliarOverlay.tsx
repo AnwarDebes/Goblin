@@ -35,7 +35,7 @@ export default function FamiliarOverlay() {
     <>
       <FamiliarEvolutionAnimation />
 
-      {/* Floating familiar bubble — offset on mobile to avoid GoblinChat button */}
+      {/* Floating familiar bubble - offset on mobile to avoid GoblinChat button */}
       <div className="fixed bottom-20 right-4 z-50 flex flex-col items-end gap-2">
         {/* Expanded panel */}
         {isExpanded && (

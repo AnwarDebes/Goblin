@@ -569,12 +569,12 @@
     touch-action: manipulation;
   }
 
-  /* Better touch targets — minimum 44px on mobile */
+  /* Better touch targets - minimum 44px on mobile */
   .badge {
     @apply px-2 py-1;
   }
 
-  /* Fix hover glow on touch — don't lift cards */
+  /* Fix hover glow on touch - don't lift cards */
   .hover-glow:hover {
     transform: none;
   }

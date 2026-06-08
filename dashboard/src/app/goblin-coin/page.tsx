@@ -114,7 +114,7 @@ export default function GoblinCoinPage() {
               The official token of Goblin AI Trading Platform
             </p>
             <p className="text-xs sm:text-sm text-gray-500 max-w-md">
-              GBLN powers the Goblin ecosystem — staking rewards, premium features,
+              GBLN powers the Goblin ecosystem - staking rewards, premium features,
               and governance for the AI trading community.
             </p>
 
@@ -147,7 +147,7 @@ export default function GoblinCoinPage() {
             </div>
           </div>
 
-          {/* 3D Coin — single responsive instance */}
+          {/* 3D Coin - single responsive instance */}
           <div className="mt-6 lg:mt-0">
             <div className="relative">
               <div className="absolute inset-0 bg-goblin-500/10 blur-3xl rounded-full" />

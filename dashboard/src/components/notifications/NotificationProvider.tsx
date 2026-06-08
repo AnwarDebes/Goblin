@@ -54,7 +54,7 @@ export default function NotificationProvider() {
     }
   }, [notifications]);
 
-  // Real SSE connection — no mock notifications
+  // Real SSE connection - no mock notifications
   useEffect(() => {
     let retryTimeout: ReturnType<typeof setTimeout>;
     let retryCount = 0;

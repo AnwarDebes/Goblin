@@ -246,7 +246,7 @@ export default function TradeHistory() {
           {/* Page info + navigation */}
           <div className="flex items-center gap-1">
             <span className="mr-3 text-xs text-gray-400">
-              {(page - 1) * pageSize + 1}–
+              {(page - 1) * pageSize + 1}-
               {Math.min(page * pageSize, total)} of {total}
             </span>
 

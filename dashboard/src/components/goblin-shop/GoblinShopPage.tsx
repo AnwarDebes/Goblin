@@ -10,10 +10,10 @@ import ActivityFeed from "./features/ActivityFeed";
 import CoinCounter from "./effects/CoinCounter";
 import { cn } from "@/lib/utils";
 
-// 3D hero — SSR disabled (Three.js)
+// 3D hero - SSR disabled (Three.js)
 const InteractiveBazaar3D = dynamic(() => import("./hero/InteractiveBazaar3D"), { ssr: false });
 
-// Districts — dynamically loaded (only one visible at a time)
+// Districts - dynamically loaded (only one visible at a time)
 const ForgeOfStrategies = dynamic(() => import("./districts/ForgeOfStrategies"));
 const OracleEmporium = dynamic(() => import("./districts/OracleEmporium"));
 const AlchemistWorkshop = dynamic(() => import("./districts/AlchemistWorkshop"));
@@ -27,12 +27,12 @@ const GuildHall = dynamic(() => import("./districts/GuildHall"));
 const ProphecyChamber = dynamic(() => import("./districts/ProphecyChamber"));
 const SkinWorkshop = dynamic(() => import("./districts/SkinWorkshop"));
 
-// Features — dynamically loaded (only one visible at a time)
+// Features - dynamically loaded (only one visible at a time)
 const MysteryChests = dynamic(() => import("./features/MysteryChests"));
 const WheelOfFortune = dynamic(() => import("./features/WheelOfFortune"));
 const BattlePass = dynamic(() => import("./features/BattlePass"));
 
-// Modals — dynamically loaded (conditionally rendered)
+// Modals - dynamically loaded (conditionally rendered)
 const StrategyDetailModal = dynamic(() => import("./modals/StrategyDetailModal"));
 const PurchaseModal = dynamic(() => import("./modals/PurchaseModal"));
 const StakingModal = dynamic(() => import("./modals/StakingModal"));

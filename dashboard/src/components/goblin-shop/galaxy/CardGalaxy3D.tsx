@@ -320,7 +320,7 @@ function GalaxyCardSlot({
         onPointerLeave={() => setIsHovered(false)}
       >
         <Billboard follow lockX={false} lockY={false} lockZ={false}>
-          {/* 3D backing card mesh — provides the glow and depth */}
+          {/* 3D backing card mesh - provides the glow and depth */}
           <mesh ref={meshRef} scale={isSelected ? [1.15, 1.15, 1] : isHovered ? [1.05, 1.05, 1] : [1, 1, 1]}>
             <planeGeometry args={[2.4 * config.cardScale, 3.2 * config.cardScale]} />
             <meshStandardMaterial
@@ -346,7 +346,7 @@ function GalaxyCardSlot({
             />
           </mesh>
 
-          {/* HTML card overlay — real React content in 3D */}
+          {/* HTML card overlay - real React content in 3D */}
           <Html
             transform
             distanceFactor={5}

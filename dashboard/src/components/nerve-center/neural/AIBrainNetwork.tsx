@@ -32,7 +32,7 @@ export default function AIBrainNetwork({ models, factors }: AIBrainNetworkProps)
       };
     });
 
-    // Factor nodes — top 8 factors from the first factorRow
+    // Factor nodes - top 8 factors from the first factorRow
     const topFactors: { name: string; direction: string; pos: [number, number, number] }[] = [];
     if (factors.length > 0) {
       const factorEntries = Object.entries(factors[0].factors).slice(0, 8);

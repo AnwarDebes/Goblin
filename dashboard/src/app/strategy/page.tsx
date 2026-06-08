@@ -179,7 +179,7 @@ export default function StrategyPage() {
 
       {/* Main layout: palette | canvas | config */}
       <div className="flex-1 min-h-0 flex gap-2">
-        {/* Left: Palette — hidden on mobile, collapsible on desktop */}
+        {/* Left: Palette - hidden on mobile, collapsible on desktop */}
         <div className={cn(
           "shrink-0 overflow-y-auto transition-all hidden sm:block",
           paletteOpen ? "w-40 lg:w-48" : "w-0"
@@ -194,7 +194,7 @@ export default function StrategyPage() {
           )}
         </div>
 
-        {/* Toggle button — hidden on mobile */}
+        {/* Toggle button - hidden on mobile */}
         <button
           onClick={() => setPaletteOpen(!paletteOpen)}
           className="shrink-0 self-start mt-2 px-1 py-4 rounded bg-gray-800 text-gray-400 hover:text-white border border-gray-700 text-[10px] hidden sm:block"
@@ -212,7 +212,7 @@ export default function StrategyPage() {
           selectedNodeId={selectedNodeId}
         />
 
-        {/* Right: Node config — responsive width */}
+        {/* Right: Node config - responsive width */}
         {selectedNode && (
           <div className="shrink-0 w-44 sm:w-52 card overflow-y-auto p-2 sm:p-3">
             <NodeConfig
@@ -228,7 +228,7 @@ export default function StrategyPage() {
         Drag nodes from palette. Connect output ports (green) to input ports (gray). Pan with background drag, zoom with scroll.
       </p>
 
-      {/* Mobile FAB — add nodes (left side to avoid GoblinChat & Familiar on right) */}
+      {/* Mobile FAB - add nodes (left side to avoid GoblinChat & Familiar on right) */}
       <button
         onClick={() => setMobilePaletteOpen(true)}
         className="sm:hidden fixed bottom-4 left-4 z-40 h-12 w-12 rounded-full bg-goblin-500 text-white shadow-lg flex items-center justify-center active:scale-95 transition-transform"

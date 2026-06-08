@@ -92,7 +92,7 @@ export default function Header() {
         {/* Subtle bottom accent line */}
         <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-goblin-500/20 to-transparent" />
 
-        {/* CRT scanning line — hidden on mobile for performance */}
+        {/* CRT scanning line - hidden on mobile for performance */}
         <div className="header-scan-line hidden sm:block" />
 
         {/* Current page name */}
@@ -122,7 +122,7 @@ export default function Header() {
 
           <div className="h-4 w-px bg-gray-800 hidden xl:block" />
 
-          {/* Sound toggle — hidden on small mobile */}
+          {/* Sound toggle - hidden on small mobile */}
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
             className="hidden sm:block text-gray-400 hover:text-white transition-colors"
@@ -131,7 +131,7 @@ export default function Header() {
             {soundEnabled ? <Volume2 size={16} className="text-goblin-500" /> : <VolumeX size={16} />}
           </button>
 
-          {/* Smart Alerts — hidden on small mobile */}
+          {/* Smart Alerts - hidden on small mobile */}
           <div className="relative hidden sm:block">
             <AlertManager />
           </div>

@@ -294,7 +294,7 @@ export default function GoblinCharacter({
         <meshStandardMaterial color={SKIN_DARK} />
       </mesh>
 
-      {/* Mouth — little grin */}
+      {/* Mouth - little grin */}
       <mesh position={[0, 1.05, 0.28]} rotation={[0.2, 0, 0]}>
         <torusGeometry args={[0.06, 0.012, 4, 8, Math.PI]} />
         <meshStandardMaterial color="#2d5a30" />

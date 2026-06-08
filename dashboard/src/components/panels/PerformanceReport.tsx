@@ -128,7 +128,7 @@ Profit Factor: ${profitFactor === Infinity ? "---" : profitFactor.toFixed(2)}`;
             <div>
               <p className="text-sm font-bold text-white">Goblin AI Trading Platform</p>
               <p className="text-[10px] text-gray-500">
-                Performance Report: {new Date(trades[trades.length - 1]?.created_at || Date.now()).toLocaleDateString()} – {new Date().toLocaleDateString()}
+                Performance Report: {new Date(trades[trades.length - 1]?.created_at || Date.now()).toLocaleDateString()} - {new Date().toLocaleDateString()}
               </p>
             </div>
           </div>

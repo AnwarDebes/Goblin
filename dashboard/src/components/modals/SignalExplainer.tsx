@@ -181,7 +181,7 @@ export default function SignalExplainer({ signalId, symbol, onClose }: Props) {
                 <span>Support: {data.market_snapshot.support_level != null ? `$${data.market_snapshot.support_level.toLocaleString()}` : "N/A"}</span>
                 <span>Resistance: {data.market_snapshot.resistance_level != null ? `$${data.market_snapshot.resistance_level.toLocaleString()}` : "N/A"}</span>
               </div>
-              {isPartial && <p className="text-[10px] text-yellow-500/80 mt-1">Limited data — detailed analysis unavailable</p>}
+              {isPartial && <p className="text-[10px] text-yellow-500/80 mt-1">Limited data - detailed analysis unavailable</p>}
             </div>
 
             {/* Risk Profile */}

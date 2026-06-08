@@ -17,7 +17,7 @@ export interface ZoneDefinition {
 }
 
 /**
- * Symmetric pentagon layout — 5 outer zones at equal spacing (R=20, 72° apart)
+ * Symmetric pentagon layout - 5 outer zones at equal spacing (R=20, 72° apart)
  * around a center Treasury. Player spawns south looking north.
  *
  *              Oracle(12,16)     Wizard(-12,16)

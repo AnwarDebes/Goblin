@@ -21,7 +21,7 @@ export default function SafeguardsStrip() {
     return (
       <div className="bg-red-500/10 border-b border-red-500/20 px-4 py-1.5 text-xs text-red-400 flex items-center gap-2">
         <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
-        Trading halted — {downServices.length} services down ({downServices.map((s) => s.service_name).join(", ")})
+        Trading halted - {downServices.length} services down ({downServices.map((s) => s.service_name).join(", ")})
       </div>
     );
   }
@@ -36,7 +36,7 @@ export default function SafeguardsStrip() {
     );
   }
 
-  // Normal — thin green line
+  // Normal - thin green line
   return (
     <div className="h-px bg-gradient-to-r from-transparent via-goblin-500/20 to-transparent" />
   );

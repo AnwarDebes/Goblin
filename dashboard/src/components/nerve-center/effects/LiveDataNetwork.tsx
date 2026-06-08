@@ -7,7 +7,7 @@ import { ZONE_CONNECTIONS, getZoneById } from "../zones/ZoneConfig";
 
 /**
  * Persistent flowing particle streams along every zone connection.
- * Each connection has particles continuously flowing in its direction —
+ * Each connection has particles continuously flowing in its direction -
  * the kingdom's nervous system always alive.
  *
  * Uses a single InstancedMesh for performance (~120 particles total).

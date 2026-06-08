@@ -27,7 +27,7 @@ export default function SystemPage() {
         </p>
       </div>
 
-      {/* Resource Monitor — Overview Cards + Table + Memory Bar */}
+      {/* Resource Monitor - Overview Cards + Table + Memory Bar */}
       <ResourceMonitor />
 
       {/* Service Health Matrix | Dependency Graph */}

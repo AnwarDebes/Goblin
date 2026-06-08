@@ -6,7 +6,7 @@ import DataPacket from "./DataPacket";
 import { getZoneById, type ZoneId } from "../zones/ZoneConfig";
 
 /**
- * Zone position helpers — get the 3D world position (slightly elevated) for a zone.
+ * Zone position helpers - get the 3D world position (slightly elevated) for a zone.
  */
 function zonePos(zoneId: ZoneId): [number, number, number] {
   const def = getZoneById(zoneId);
@@ -15,7 +15,7 @@ function zonePos(zoneId: ZoneId): [number, number, number] {
 }
 
 /**
- * Communication event — a real data change that triggers a visual packet.
+ * Communication event - a real data change that triggers a visual packet.
  */
 interface CommEvent {
   id: string;

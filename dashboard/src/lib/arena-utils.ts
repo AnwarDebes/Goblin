@@ -271,7 +271,7 @@ export function generateGuilds(): Guild[] {
       totalWinRate: 67.8,
       weeklyXP: 210000,
       perks: GUILD_PERKS.map((p) => ({ ...p, level: p.maxLevel })),
-      description: "We don't just see the moon — we trade on it.",
+      description: "We don't just see the moon - we trade on it.",
       isRecruiting: false,
       minLevel: 20,
     },

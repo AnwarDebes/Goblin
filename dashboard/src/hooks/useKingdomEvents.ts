@@ -17,7 +17,7 @@ export function useKingdomEvents() {
   // New signals
   useEffect(() => {
     if (!initRef.current) {
-      // First render — seed refs without generating events
+      // First render - seed refs without generating events
       prevSignals.current = new Set(data.signals.map((s) => s.signal_id));
       prevTrades.current = new Set(data.trades.map((t) => `${t.symbol}-${t.closed_at}`));
       for (const svc of data.health) {

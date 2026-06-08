@@ -1,7 +1,7 @@
 import * as THREE from "three";
 
 /**
- * Fibonacci sphere distribution — evenly spaces N points on a sphere surface.
+ * Fibonacci sphere distribution - evenly spaces N points on a sphere surface.
  * Returns [x, y, z] for the i-th point (0-indexed) out of total points.
  */
 export function fibonacciSphere(

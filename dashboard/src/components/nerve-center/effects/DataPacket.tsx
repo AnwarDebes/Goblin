@@ -97,7 +97,7 @@ export default function DataPacket({
 
   return (
     <group>
-      {/* Head — bright glowing sphere */}
+      {/* Head - bright glowing sphere */}
       <mesh ref={headRef}>
         <sphereGeometry args={[1, 10, 10]} />
         <meshStandardMaterial
@@ -108,7 +108,7 @@ export default function DataPacket({
         />
       </mesh>
 
-      {/* Aura — soft glow around head */}
+      {/* Aura - soft glow around head */}
       <mesh ref={auraRef}>
         <sphereGeometry args={[1, 8, 8]} />
         <meshStandardMaterial
@@ -121,7 +121,7 @@ export default function DataPacket({
         />
       </mesh>
 
-      {/* Trail — fading particles behind */}
+      {/* Trail - fading particles behind */}
       <instancedMesh ref={trailMeshRef} args={[undefined, undefined, trailLength]} frustumCulled={false}>
         <sphereGeometry args={[1, 6, 6]} />
         <meshStandardMaterial

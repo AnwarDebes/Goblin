@@ -12,7 +12,7 @@ interface SignalBeamProps {
   onComplete: () => void;
 }
 
-/** Animated arc beam — like a cyber attack map projectile */
+/** Animated arc beam - like a cyber attack map projectile */
 export default function SignalBeam({ from, to, color, onComplete }: SignalBeamProps) {
   const progressRef = useRef(0);
   const headRef = useRef<THREE.Mesh>(null);

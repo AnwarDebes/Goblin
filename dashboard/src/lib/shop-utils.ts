@@ -492,18 +492,18 @@ export function generateQuests(
 /* ── Ingredients ───────────────────────────────────────────────── */
 
 export const INGREDIENTS: IndicatorIngredient[] = [
-  { id: "rsi", name: "RSI Essence", category: "momentum", icon: "📊", description: "Relative Strength Index — overbought/oversold detector", color: "#22c55e" },
-  { id: "macd", name: "MACD Elixir", category: "trend", icon: "📈", description: "Moving Average Convergence Divergence — trend momentum", color: "#3b82f6" },
-  { id: "bollinger", name: "Bollinger Dust", category: "volatility", icon: "🌪️", description: "Bollinger Bands — volatility envelope", color: "#a855f7" },
-  { id: "ema", name: "EMA Crystal", category: "trend", icon: "💎", description: "Exponential Moving Average — trend direction", color: "#06b6d4" },
-  { id: "stochastic", name: "Stochastic Powder", category: "momentum", icon: "⚡", description: "Stochastic Oscillator — momentum reversals", color: "#f59e0b" },
-  { id: "atr", name: "ATR Flames", category: "volatility", icon: "🔥", description: "Average True Range — volatility measurement", color: "#ef4444" },
-  { id: "obv", name: "OBV Nectar", category: "volume", icon: "🧪", description: "On-Balance Volume — volume-price relationship", color: "#10b981" },
-  { id: "vwap", name: "VWAP Serum", category: "volume", icon: "💧", description: "Volume-Weighted Avg Price — institutional levels", color: "#6366f1" },
-  { id: "williams", name: "Williams' Tear", category: "momentum", icon: "💀", description: "Williams %R — extreme overbought/oversold", color: "#dc2626" },
-  { id: "keltner", name: "Keltner Silk", category: "volatility", icon: "🕸️", description: "Keltner Channels — volatility-based channels", color: "#8b5cf6" },
-  { id: "sma", name: "SMA Stone", category: "trend", icon: "🪨", description: "Simple Moving Average — baseline trend", color: "#64748b" },
-  { id: "mfi", name: "MFI Essence", category: "volume", icon: "🌊", description: "Money Flow Index — volume-weighted RSI", color: "#0ea5e9" },
+  { id: "rsi", name: "RSI Essence", category: "momentum", icon: "📊", description: "Relative Strength Index - overbought/oversold detector", color: "#22c55e" },
+  { id: "macd", name: "MACD Elixir", category: "trend", icon: "📈", description: "Moving Average Convergence Divergence - trend momentum", color: "#3b82f6" },
+  { id: "bollinger", name: "Bollinger Dust", category: "volatility", icon: "🌪️", description: "Bollinger Bands - volatility envelope", color: "#a855f7" },
+  { id: "ema", name: "EMA Crystal", category: "trend", icon: "💎", description: "Exponential Moving Average - trend direction", color: "#06b6d4" },
+  { id: "stochastic", name: "Stochastic Powder", category: "momentum", icon: "⚡", description: "Stochastic Oscillator - momentum reversals", color: "#f59e0b" },
+  { id: "atr", name: "ATR Flames", category: "volatility", icon: "🔥", description: "Average True Range - volatility measurement", color: "#ef4444" },
+  { id: "obv", name: "OBV Nectar", category: "volume", icon: "🧪", description: "On-Balance Volume - volume-price relationship", color: "#10b981" },
+  { id: "vwap", name: "VWAP Serum", category: "volume", icon: "💧", description: "Volume-Weighted Avg Price - institutional levels", color: "#6366f1" },
+  { id: "williams", name: "Williams' Tear", category: "momentum", icon: "💀", description: "Williams %R - extreme overbought/oversold", color: "#dc2626" },
+  { id: "keltner", name: "Keltner Silk", category: "volatility", icon: "🕸️", description: "Keltner Channels - volatility-based channels", color: "#8b5cf6" },
+  { id: "sma", name: "SMA Stone", category: "trend", icon: "🪨", description: "Simple Moving Average - baseline trend", color: "#64748b" },
+  { id: "mfi", name: "MFI Essence", category: "volume", icon: "🌊", description: "Money Flow Index - volume-weighted RSI", color: "#0ea5e9" },
 ];
 
 /* ── Crafting Logic ────────────────────────────────────────────── */

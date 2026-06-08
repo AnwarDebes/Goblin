@@ -67,7 +67,7 @@ export default function AIStatsCards({ stats, isLoading }: { stats?: AIStats; is
       {topCats.length < 3 &&
         Array.from({ length: 3 - topCats.length }).map((_, i) => (
           <div key={`empty-${i}`} className="card px-3 py-2">
-            <div className="text-[10px] text-gray-500 uppercase tracking-wider">—</div>
+            <div className="text-[10px] text-gray-500 uppercase tracking-wider">-</div>
             <div className="text-xl font-bold text-gray-700 mt-0.5">0</div>
           </div>
         ))}

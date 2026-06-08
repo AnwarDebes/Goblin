@@ -585,7 +585,7 @@ export async function getSignalExplanation(signalId: string, symbol: string): Pr
   try {
     return await requestJson(`/api/v2/signals/${signalId}/explain`);
   } catch {
-    // Build partial explanation from real ticker data only — no fabricated values
+    // Build partial explanation from real ticker data only - no fabricated values
     try {
       const ticker = await getTicker(symbol);
       const t = asRecord(ticker);

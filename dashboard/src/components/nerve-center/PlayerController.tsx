@@ -103,7 +103,7 @@ function KingGoblin() {
         </mesh>
       </group>
 
-      {/* Torso — Royal armor */}
+      {/* Torso - Royal armor */}
       <mesh position={[0, 0.95, 0]}>
         <capsuleGeometry args={[0.32, 0.45, 4, 8]} />
         <meshStandardMaterial color="#92400e" metalness={0.5} roughness={0.3} />
@@ -519,7 +519,7 @@ export default function PlayerController() {
       playerRef.current.rotation.y = state.playerRotation;
     }
 
-    // Third-person camera — placed BEHIND the player
+    // Third-person camera - placed BEHIND the player
     // Behind direction = opposite of forward = (-sin(angleH), 0, cos(angleH))
     const camDist = CAM_DISTANCE;
     const camHeight = CAM_HEIGHT + angleV * 6;
@@ -532,7 +532,7 @@ export default function PlayerController() {
     // Look at point (slightly above player)
     _lookAt.set(px, PLAYER_Y + 1.5, pz);
 
-    // Set camera position directly — no lerp so 360° rotation is instant and smooth
+    // Set camera position directly - no lerp so 360° rotation is instant and smooth
     camera.position.copy(_camPos);
     camera.lookAt(_lookAt);
 

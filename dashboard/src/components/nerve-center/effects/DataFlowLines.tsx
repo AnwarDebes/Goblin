@@ -6,7 +6,7 @@ import { Line } from "@react-three/drei";
 import * as THREE from "three";
 import { ZONE_CONNECTIONS, getZoneById, type ZoneId } from "../zones/ZoneConfig";
 
-/** Animated dashed flow lines connecting zones — the kingdom's nervous system */
+/** Animated dashed flow lines connecting zones - the kingdom's nervous system */
 export default function DataFlowLines() {
   return (
     <group>
