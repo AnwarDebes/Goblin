@@ -128,10 +128,10 @@ SELECT create_hypertable('ml_predictions', 'time', if_not_exists => TRUE);
 CREATE TABLE IF NOT EXISTS onchain_metrics (
     time TIMESTAMPTZ NOT NULL,
     symbol VARCHAR(20) NOT NULL,
-    metric_name VARCHAR(50) NOT NULL,  -- 'whale_flow', 'exchange_netflow', 'funding_rate', etc.
+    metric_type VARCHAR(50) NOT NULL,  -- 'whale_flow', 'exchange_netflow', 'funding_rate', etc.
     value DECIMAL(20, 8) NOT NULL,
     metadata JSONB,
-    PRIMARY KEY (time, symbol, metric_name)
+    PRIMARY KEY (time, symbol, metric_type)
 );
 SELECT create_hypertable('onchain_metrics', 'time', if_not_exists => TRUE);
 
@@ -180,7 +180,7 @@ CREATE INDEX IF NOT EXISTS idx_ticks_symbol_time ON ticks(symbol, time DESC);
 CREATE INDEX IF NOT EXISTS idx_candles_symbol_tf ON candles(symbol, timeframe, time DESC);
 CREATE INDEX IF NOT EXISTS idx_sentiment_symbol_time ON sentiment_scores(symbol, time DESC);
 CREATE INDEX IF NOT EXISTS idx_ml_predictions_symbol ON ml_predictions(symbol, time DESC);
-CREATE INDEX IF NOT EXISTS idx_onchain_symbol ON onchain_metrics(symbol, metric_name, time DESC);
+CREATE INDEX IF NOT EXISTS idx_onchain_symbol ON onchain_metrics(symbol, metric_type, time DESC);
 CREATE INDEX IF NOT EXISTS idx_trade_history_symbol ON trade_history(symbol, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trade_history_strategy ON trade_history(strategy, created_at DESC);
 
