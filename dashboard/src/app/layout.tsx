@@ -3,6 +3,7 @@ import "./globals.css";
 import Providers from "./providers";
 import Sidebar from "@/components/layout/Sidebar";
 import Header from "@/components/layout/Header";
+import ModeBanner from "@/components/layout/ModeBanner";
 import GoblinBackground from "@/components/effects/GoblinBackground";
 import NotificationProvider from "@/components/notifications/NotificationProvider";
 import CommandPalette from "@/components/CommandPalette";
@@ -45,6 +46,7 @@ export default function RootLayout({
           <div className="relative z-10 flex h-[100dvh] overflow-hidden">
             <Sidebar />
             <div className="flex min-w-0 flex-1 flex-col lg:ml-64">
+              <ModeBanner />
               <Header />
               <SafeguardsStrip />
               <main className="flex-1 overflow-x-hidden overflow-y-auto p-2 sm:p-4 lg:p-6">

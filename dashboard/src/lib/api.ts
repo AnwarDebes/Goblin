@@ -205,6 +205,20 @@ function mapSentiment(symbol: string, rawValue: unknown, fearGreed: number): Sen
 
 /* ── Core API Functions ──────────────────────────────────────────── */
 
+export type TradingMode = "paper" | "live" | "unknown";
+
+export async function getTradingMode(): Promise<TradingMode> {
+  try {
+    const data = (await requestJson("/api/v2/mode")) as { mode?: string };
+    const mode = data?.mode;
+    return mode === "paper" || mode === "live" ? mode : "unknown";
+  } catch {
+    // never guess paper here; a wrong PAPER badge while live is the worst case
+    return "unknown";
+  }
+}
+
+
 export async function getPortfolio(): Promise<PortfolioState> {
   try {
     const data = await requestJson("/api/v2/portfolio");
