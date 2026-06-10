@@ -3,6 +3,7 @@ CryptoPanic news scraper - fetches trending crypto news posts.
 """
 import asyncio
 import os
+import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -12,8 +13,20 @@ from pydantic import BaseModel
 
 logger = structlog.get_logger()
 
-# CryptoPanic developer endpoint (v2). v1 endpoint now returns 404.
-CRYPTOPANIC_API_URL = "https://cryptopanic.com/api/developer/v2/posts/"
+_AUTH_TOKEN_RE = re.compile(r"(auth_token=)[^&\s'\"]+", re.IGNORECASE)
+
+
+def _redact_token(text: str) -> str:
+    """Strip API tokens from any string destined for logs."""
+    return _AUTH_TOKEN_RE.sub(r"\1<REDACTED>", text)
+
+
+# CryptoPanic v2 endpoint shape: /api/{plan}/v2/posts/.
+# The free "developer" plan was retired 2026-04-01 and its path now 404s;
+# paid plans keep the same shape (e.g. /api/growth/v2/posts/). Set
+# CRYPTOPANIC_API_PLAN to the plan slug from the dashboard, with a matching key.
+CRYPTOPANIC_API_PLAN = os.getenv("CRYPTOPANIC_API_PLAN", "developer")
+CRYPTOPANIC_API_URL = f"https://cryptopanic.com/api/{CRYPTOPANIC_API_PLAN}/v2/posts/"
 CRYPTOPANIC_API_KEY = os.getenv("CRYPTOPANIC_API_KEY", "")
 
 # Map common currency symbols to trading pairs
@@ -54,6 +67,7 @@ class CryptoPanicScraper:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or CRYPTOPANIC_API_KEY
         self._client: Optional[httpx.AsyncClient] = None
+        self._disabled = False  # set after a fatal API error; source then yields nothing
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -69,6 +83,8 @@ class CryptoPanicScraper:
 
     async def fetch(self) -> List[NewsItem]:
         """Fetch latest rising posts from CryptoPanic."""
+        if self._disabled:
+            return []
         if not self.api_key:
             logger.warning("cryptopanic_no_api_key", msg="CRYPTOPANIC_API_KEY not set, skipping")
             return []
@@ -148,8 +164,20 @@ class CryptoPanicScraper:
 
             logger.info("cryptopanic_fetched", count=len(items))
         except httpx.HTTPStatusError as e:
-            logger.error("cryptopanic_http_error", status=e.response.status_code, detail=str(e))
+            status = e.response.status_code
+            if status in (401, 404):
+                # Endpoint or key is gone for good (the free developer tier was
+                # retired 2026-04-01) - retrying every cycle is pointless noise.
+                # Warn once; Reddit and Fear&Greed keep driving sentiment.
+                self._disabled = True
+                logger.warning(
+                    "cryptopanic_source_disabled",
+                    status=status,
+                    msg="CryptoPanic source disabled for this run; sentiment continues on remaining sources",
+                )
+            else:
+                logger.error("cryptopanic_http_error", status=status, detail=_redact_token(str(e)))
         except Exception as e:
-            logger.error("cryptopanic_error", error=str(e))
+            logger.error("cryptopanic_error", error=_redact_token(str(e)))
 
         return items
