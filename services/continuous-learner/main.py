@@ -140,6 +140,7 @@ async def _load_symbols_from_db(pool: asyncpg.Pool) -> list:
             # Prefer symbols with candle data, sorted by count
             rows = await conn.fetch(
                 """SELECT symbol, COUNT(*) as cnt FROM candles
+                   WHERE timeframe = '5m'
                    GROUP BY symbol ORDER BY cnt DESC LIMIT $1""",
                 MAX_TRAINING_SYMBOLS,
             )
@@ -400,7 +401,7 @@ class RewardTracker:
                 async with pool.acquire() as conn:
                     row = await conn.fetchrow(
                         """SELECT close FROM candles
-                           WHERE symbol = $1 AND time > $2
+                           WHERE symbol = $1 AND time > $2 AND timeframe = '5m'
                            ORDER BY time ASC LIMIT 1""",
                         pred["symbol"],
                         pred_time + timedelta(minutes=outcome_minutes),
@@ -1308,7 +1309,7 @@ async def load_candle_data(pool: asyncpg.Pool, symbols: list, days: int) -> pd.D
         rows = await conn.fetch(
             """SELECT time, symbol, open, high, low, close, volume
                FROM candles
-               WHERE symbol = ANY($1::text[]) AND time >= $2
+               WHERE symbol = ANY($1::text[]) AND time >= $2 AND timeframe = '5m'
                ORDER BY symbol, time ASC""",
             symbols, start_time,
         )
@@ -1805,7 +1806,7 @@ async def listen_for_trade_closes(redis: aioredis.Redis, pool: asyncpg.Pool):
                         async with pool.acquire() as conn:
                             rows = await conn.fetch(
                                 """SELECT time, open, high, low, close, volume
-                                   FROM candles WHERE symbol = $1
+                                   FROM candles WHERE symbol = $1 AND timeframe = '5m'
                                    ORDER BY time DESC LIMIT 100""",
                                 symbol,
                             )
