@@ -198,6 +198,11 @@ def regime_allows_entry(regime: RegimeState, direction: str) -> bool:
     entries here was preventing ALL trades because most symbols were in
     trending_down during the current fear cycle.
     """
-    if regime.regime == "choppy" and regime.choppiness > 0.8:
+    # 2026-06-09: block ALL chop, not just choppiness > 0.8. In the 12h validation
+    # run 91% of entries fired in chop and lost net of fees - the mean 15-min move
+    # in chop is below the round-trip fee, so every chop entry is a fee donation.
+    # Also covers the indeterminate fallback (classify_regime defaults unclear
+    # markets to "choppy").
+    if regime.regime == "choppy":
         return False
     return True

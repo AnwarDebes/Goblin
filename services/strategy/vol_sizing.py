@@ -87,8 +87,8 @@ MIN_CONFIDENCE_FOR_FULL_SIZE = 0.7
 
 # Fear & Greed contrarian multipliers
 FEAR_GREED_SIZE_MULTIPLIERS = {
-    "extreme_fear":  1.5,        # 50% larger — max contrarian opportunity
-    "fear":          1.25,       # 25% larger
+    "extreme_fear":  1.2,        # 2026-06-09: trimmed - the boost was outvoting regime/streak cuts that realized performance justified
+    "fear":          1.1,
     "neutral":       1.0,        # Normal sizing
     "greed":         0.75,       # 25% smaller — market overheated
     "extreme_greed": 0.5,        # 50% smaller — high reversal risk

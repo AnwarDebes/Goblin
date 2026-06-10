@@ -41,8 +41,8 @@ class EdgeDecision:
 
 # ── Configuration ─────────────────────────────────────────────────────
 
-EDGE_THRESHOLD = 0.40          # 2026-05-24: raised from 0.30 — quality over quantity
-MIN_CONFIDENCE = 0.25          # 2026-05-24: raised from 0.10 — matches signal layer's new threshold
+EDGE_THRESHOLD = 0.65          # 2026-06-09: raised from 0.40 - 12h run showed gross expectancy below the 0.1% round-trip fee; only the top conviction tail can clear it
+MIN_CONFIDENCE = 0.70          # 2026-06-09: raised from 0.25 - backstop just under the signal layer's 0.75
 AGREEMENT_BONUS = 0.15         # bonus when TCN + XGBoost agree
 
 # Spread filter: tightened for normal entries, relaxed for fast movers
@@ -52,7 +52,7 @@ MAX_SPREAD_PCT_FAST_MOVER = 0.40  # allow up to 0.40% for fast movers
 # Fast mover detection thresholds
 FAST_MOVER_PRICE_CHANGE_PCT = 0.02   # 2%+ price change in window
 FAST_MOVER_VOLUME_RATIO_MIN = 1.5    # Volume must be increasing (1.5x+ normal)
-FAST_MOVER_EDGE_REDUCTION = 0.10     # Lower edge threshold by 10% for fast movers
+FAST_MOVER_EDGE_REDUCTION = 0.0      # 2026-06-09: never lower the bar - fast movers carry the widest spreads (up to 0.40%), the costliest round trips
 
 # Regime-based adjustments
 REGIME_EDGE_PENALTIES = {
@@ -75,8 +75,8 @@ FEAR_GREED_ZONES = {
 
 # Edge threshold adjustments based on Fear & Greed zone (negative = easier entry)
 FEAR_GREED_THRESHOLD_ADJUSTMENTS = {
-    "extreme_fear":  -0.15,   # Lower bar: easier to enter in extreme fear
-    "fear":          -0.08,   # Slightly easier to enter
+    "extreme_fear":  -0.05,   # 2026-06-09: contrarian easing was admitting low-conviction longs in fear; conviction must come from the model, not the mood index
+    "fear":          -0.03,
     "neutral":        0.0,    # No change
     "greed":          0.10,   # Harder to enter in greed
     "extreme_greed":  0.20,   # Much harder to enter in extreme greed
@@ -93,22 +93,24 @@ FEAR_GREED_EDGE_BONUS = {
 
 # F&G-aware minimum confidence thresholds (overrides MIN_CONFIDENCE per zone)
 # 2026-05-24: rescaled in lockstep with MIN_CONFIDENCE raise from 0.10 to 0.25
+# 2026-06-09: rescaled in lockstep with MIN_CONFIDENCE raise from 0.25 to 0.70
 FEAR_GREED_MIN_CONFIDENCE = {
-    "extreme_fear":  0.22,   # Slightly lower bar — contrarian buys allowed
-    "fear":          0.23,
-    "neutral":       0.25,
-    "greed":         0.28,
-    "extreme_greed": 0.32,
+    "extreme_fear":  0.68,   # Slightly lower bar - contrarian buys allowed
+    "fear":          0.69,
+    "neutral":       0.70,
+    "greed":         0.73,
+    "extreme_greed": 0.77,
 }
 
 # v13: Reduced max concurrent positions — too many correlated altcoin positions
 # destroys diversification benefit. Fewer, higher-conviction trades is better.
+# 2026-06-09: halved again - 5 concurrent positions on 6 correlated majors is one bet
 FEAR_GREED_MAX_POSITIONS = {
-    "extreme_fear":  6,
-    "fear":          5,
-    "neutral":       5,
-    "greed":         4,
-    "extreme_greed": 3,
+    "extreme_fear":  3,
+    "fear":          3,
+    "neutral":       2,
+    "greed":         2,
+    "extreme_greed": 1,
 }
 
 # Direction preference by F&G zone: positive = prefer longs, negative = prefer shorts
