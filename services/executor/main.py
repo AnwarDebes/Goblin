@@ -24,7 +24,9 @@ MEXC_SECRET_KEY = os.getenv("MEXC_SECRET_KEY", "")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-PAPER_MODE = os.getenv("PAPER_MODE", "false").lower() == "true"
+# Fail safe: a missing or typo'd env var must mean PAPER, never live.
+# (TRADING_MODE in trading.env is read by no code - this is the only real switch.)
+PAPER_MODE = os.getenv("PAPER_MODE", "true").lower() == "true"
 STARTING_CAPITAL = float(os.getenv("STARTING_CAPITAL", 1000.0))
 
 # Signal channel: prefer sized_signals from portfolio-optimizer, fallback to validated_signals
