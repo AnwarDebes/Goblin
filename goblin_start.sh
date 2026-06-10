@@ -266,7 +266,7 @@ else
         BEGIN
             FOR t IN SELECT tablename FROM pg_tables
                      WHERE schemaname = 'public'
-                       AND tablename IN ('trade_history','portfolio_snapshots','signals','orders','ml_predictions','ticks','candles','positions','sentiment_scores')
+                       AND tablename IN ('trade_history','portfolio_snapshots','signals','orders','ml_predictions','positions','sentiment_scores')
             LOOP
                 EXECUTE 'TRUNCATE TABLE ' || quote_ident(t) || ' CASCADE';
             END LOOP;
