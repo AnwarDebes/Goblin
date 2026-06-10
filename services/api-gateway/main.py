@@ -449,6 +449,20 @@ async def system_status():
 # v2 API - Dashboard Endpoints
 # =============================================
 
+@app.get("/api/v2/mode")
+async def get_trading_mode():
+    """Paper vs live, straight from the executor. Returns unknown on failure;
+    never default to paper - a false PAPER badge while live is the worst case."""
+    try:
+        resp = await http_client.get(f"{SERVICES['executor']}/health", timeout=3.0)
+        if resp.status_code == 200:
+            mode = resp.json().get("mode", "unknown")
+            return {"mode": mode if mode in ("paper", "live") else "unknown"}
+    except Exception:
+        pass
+    return {"mode": "unknown"}
+
+
 @app.get("/api/v2/portfolio")
 async def get_portfolio_v2():
     """Get full portfolio state for dashboard."""
@@ -489,7 +503,8 @@ async def get_portfolio_v2():
         bal_summary = balance_data.get("summary", {})
         paper = bal_summary if bal_summary else {}
 
-        total_value = paper.get("total_value", 0) or risk_data.get("total_value", 0)
+        # live mode has no paper summary; risk publishes total_capital, not total_value
+        total_value = paper.get("total_value", 0) or risk_data.get("total_value", 0) or risk_data.get("total_capital", 0)
         cash = paper.get("usdt_balance", 0) or risk_data.get("available_capital", 0)
         positions_value = total_value - cash if total_value > cash else 0
         daily_pnl = paper.get("pnl", 0) or risk_data.get("daily_pnl", 0)
