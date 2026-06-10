@@ -337,7 +337,7 @@ async def seed_price_history_from_db():
     pg_port = int(os.getenv("POSTGRES_PORT", 5432))
     pg_db = os.getenv("POSTGRES_DB", "goblin")
     pg_user = os.getenv("POSTGRES_USER", "goblin")
-    pg_pass = os.getenv("POSTGRES_PASSWORD", "***REMOVED***")
+    pg_pass = os.getenv("POSTGRES_PASSWORD", "")
 
     try:
         conn = await asyncpg.connect(
