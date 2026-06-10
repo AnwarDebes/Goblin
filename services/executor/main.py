@@ -27,6 +27,10 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 # Fail safe: a missing or typo'd env var must mean PAPER, never live.
 # (TRADING_MODE in trading.env is read by no code - this is the only real switch.)
 PAPER_MODE = os.getenv("PAPER_MODE", "true").lower() == "true"
+# Rehearsal for live: build and validate the real order, log it, place nothing.
+LIVE_DRY_RUN = os.getenv("LIVE_DRY_RUN", "false").lower() == "true"
+# Capital preservation: refuse new entries once free USDT drops below this.
+BALANCE_FLOOR_USD = float(os.getenv("BALANCE_FLOOR_USD", 0))
 STARTING_CAPITAL = float(os.getenv("STARTING_CAPITAL", 1000.0))
 
 # Signal channel: prefer sized_signals from portfolio-optimizer, fallback to validated_signals
@@ -107,6 +111,15 @@ async def sync_portfolio_balance():
                             pass
 
             portfolio_state["total_capital"] = total_value
+            # full shape so risk/gateway/dashboard get real live values
+            portfolio_state["positions_value"] = max(total_value - usdt_balance, 0)
+            portfolio_state.setdefault("starting_capital", STARTING_CAPITAL)
+            portfolio_state["daily_pnl"] = total_value - portfolio_state.get("starting_capital", STARTING_CAPITAL)
+            try:
+                open_count = await redis_client.hlen("positions")
+            except Exception:
+                open_count = portfolio_state.get("open_positions", 0)
+            portfolio_state["open_positions"] = open_count
             await redis_client.set("portfolio_state", json.dumps(portfolio_state))
             logger.debug("Portfolio balance synced", available_capital=usdt_balance, total_capital=total_value)
     except Exception as e:
@@ -238,6 +251,10 @@ async def execute_live_order(request: OrderRequest) -> OrderResponse:
 
             if usdt_balance <= 0:
                 raise ValueError(f"Insufficient USDT balance: ${usdt_balance:.2f}")
+            if BALANCE_FLOOR_USD and usdt_balance < BALANCE_FLOOR_USD:
+                raise ValueError(
+                    f"Balance floor reached (${usdt_balance:.2f} < ${BALANCE_FLOOR_USD:.2f}) - "
+                    "entries halted for capital preservation. Sells remain allowed.")
             if usdt_balance < min_order_value:
                 raise ValueError(f"USDT balance ${usdt_balance:.2f} below minimum ${min_order_value:.2f}")
             if usdt_balance < usdt_amount:
@@ -275,10 +292,28 @@ async def execute_live_order(request: OrderRequest) -> OrderResponse:
                 logger.info("Signal already processed", signal_id=request.signal_id)
                 return json.loads(existing)
 
+        if LIVE_DRY_RUN:
+            logger.info("DRY RUN: would place order", order_id=order_id,
+                        symbol=request.symbol, side=request.side,
+                        order_type=request.order_type, amount=request.amount,
+                        est_price=current_price, est_value_usd=round(order_value, 4))
+            # no exchange call, no redis writes: the position service must not
+            # see a phantom fill, and the signal stays fresh for real execution
+            return OrderResponse(
+                order_id=order_id, exchange_order_id=None, status="dry_run",
+                symbol=request.symbol, side=request.side, amount=request.amount,
+                price=current_price, filled=0, cost=0,
+                timestamp=datetime.utcnow().isoformat(), mode="dry_run",
+                reason=request.reason,
+            )
+
         # Execute on exchange
         if request.order_type == "market":
             if request.side == "buy":
-                order = await exchange.create_market_buy_order(request.symbol, request.amount)
+                # MEXC market buys are quote-denominated; the only call that
+                # reliably works is the explicit cost variant (verified live)
+                order = await exchange.create_market_buy_order_with_cost(
+                    request.symbol, order_value)
             else:
                 order = await exchange.create_market_sell_order(request.symbol, request.amount)
         else:
@@ -304,7 +339,9 @@ async def execute_live_order(request: OrderRequest) -> OrderResponse:
                         await exchange.cancel_order(order.get("id"), request.symbol)
                     except Exception:
                         pass
-                market_order = await exchange.create_market_order(request.symbol, request.side, request.amount)
+                market_order = await exchange.create_market_order(
+                    request.symbol, request.side, request.amount,
+                    price=current_price if request.side == "buy" else None)
                 order_status = market_order.get("status", "closed")
                 filled_amount = market_order.get("filled") if market_order.get("filled") is not None else request.amount
                 order_price = market_order.get("price") or market_order.get("average") or current_price or 0
@@ -501,6 +538,8 @@ app = FastAPI(title="Order Executor Service", version="2.0.0", lifespan=lifespan
 async def health():
     mode = "paper" if PAPER_MODE else "live"
     result = {"status": "healthy", "mode": mode}
+    if not PAPER_MODE and LIVE_DRY_RUN:
+        result["dry_run"] = True
     if PAPER_MODE and paper_executor:
         summary = await paper_executor.get_portfolio_summary()
         result["paper_portfolio"] = summary
