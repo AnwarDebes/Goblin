@@ -104,12 +104,12 @@ FEAR_GREED_MIN_CONFIDENCE = {
 
 # v13: Reduced max concurrent positions — too many correlated altcoin positions
 # destroys diversification benefit. Fewer, higher-conviction trades is better.
-# 2026-06-09: halved again - 5 concurrent positions on 6 correlated majors is one bet
+# 2026-06-10: micro live account - strictly one position at a time
 FEAR_GREED_MAX_POSITIONS = {
-    "extreme_fear":  3,
-    "fear":          3,
-    "neutral":       2,
-    "greed":         2,
+    "extreme_fear":  1,
+    "fear":          1,
+    "neutral":       1,
+    "greed":         1,
     "extreme_greed": 1,
 }
 
