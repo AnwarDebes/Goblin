@@ -9,8 +9,10 @@
 # 5. Verify GPU is fully working for training
 #
 # Usage:
-#   bash goblin_start.sh              # full start
+#   bash goblin_start.sh              # full start (fresh run: resets capital/trades)
 #   bash goblin_start.sh --no-dash    # skip dashboard
+#   bash goblin_start.sh --resume     # resume after container rebuild: reinstall
+#                                     # missing binaries, keep ALL trading state
 # ============================================================
 set -euo pipefail
 
@@ -20,10 +22,14 @@ MODELS="$ROOT/shared/models"
 ENV_FILE="$ROOT/config/trading.env"
 SECRETS_FILE="$ROOT/config/.secrets.env"
 SKIP_DASHBOARD=false
+RESUME=false
 
-if [[ "${1:-}" == "--no-dash" ]]; then
-    SKIP_DASHBOARD=true
-fi
+for arg in "$@"; do
+    case "$arg" in
+        --no-dash) SKIP_DASHBOARD=true ;;
+        --resume)  RESUME=true ;;
+    esac
+done
 
 # Load config
 set -a
@@ -69,6 +75,9 @@ pkill -9 -f "uvicorn main:app" 2>/dev/null || true
 pkill -9 -f "continuous-learner/main.py" 2>/dev/null || true
 pkill -9 -f "next start" 2>/dev/null || true
 pkill -9 -f "next-server" 2>/dev/null || true
+pkill -9 -f "standalone/server.js" 2>/dev/null || true
+pkill -f "cloudflared tunnel --url" 2>/dev/null || true
+pkill -f "goblin_backup_loop.sh" 2>/dev/null || true
 
 # Force-kill anything on our ports
 for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010 8011 8080 3000; do
@@ -94,97 +103,91 @@ else
     echo "    Python 3 ........... $(python3 --version 2>&1 | head -1)"
 fi
 
-# --- Redis ---
+# --- Redis (runs as coder, AOF persistence in home - survives container rebuilds) ---
 if ! command -v redis-server &>/dev/null; then
     echo "    Installing Redis..."
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq redis-server > /dev/null 2>&1
 fi
+mkdir -p "$ROOT/shared/redis-data"
 if ! redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning PING >/dev/null 2>&1; then
-    echo "    Configuring Redis..."
-    # Start Redis if not running at all
-    if ! redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" PING >/dev/null 2>&1; then
-        sudo service redis-server start 2>/dev/null || sudo redis-server --daemonize yes --requirepass "$REDIS_PASSWORD" --appendonly yes
-        sleep 1
-    fi
-    # Set password via CONFIG SET on running instance
-    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" CONFIG SET requirepass "$REDIS_PASSWORD" >/dev/null 2>&1 || true
-    # Persist to config file for future restarts
-    if [ -f /etc/redis/redis.conf ]; then
-        if grep -q "^requirepass " /etc/redis/redis.conf 2>/dev/null; then
-            sudo sed -i "s/^requirepass .*/requirepass $REDIS_PASSWORD/" /etc/redis/redis.conf 2>/dev/null || true
-        else
-            echo "requirepass $REDIS_PASSWORD" | sudo tee -a /etc/redis/redis.conf >/dev/null 2>&1 || true
-        fi
-    fi
-    mkdir -p /home/coder/Goblin/shared/redis-data
+    echo "    Starting Redis (persistent AOF in shared/redis-data)..."
+    # conf file (0600) keeps the password out of /proc/*/cmdline; bind localhost only
+    REDIS_CONF="$ROOT/shared/redis-data/redis.conf"
+    cat > "$REDIS_CONF" <<REDISCONF
+port $REDIS_PORT
+bind 127.0.0.1 -::1
+dir $ROOT/shared/redis-data
+appendonly yes
+save 60 1000
+requirepass $REDIS_PASSWORD
+daemonize yes
+REDISCONF
+    chmod 600 "$REDIS_CONF"
+    redis-server "$REDIS_CONF"
+    sleep 1
 fi
 if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning PING >/dev/null 2>&1; then
-    echo "    Redis .............. OK"
+    echo "    Redis .............. OK (data: $ROOT/shared/redis-data)"
 else
     echo "    [FAIL] Cannot connect to Redis!"
     exit 1
 fi
 
-# --- PostgreSQL + TimescaleDB ---
+# --- PostgreSQL + TimescaleDB (cluster owned by coder, data in home - survives rebuilds) ---
 if ! command -v psql &>/dev/null; then
     echo "    Installing PostgreSQL..."
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql postgresql-contrib > /dev/null 2>&1
 fi
-if ! sudo service postgresql status >/dev/null 2>&1; then
-    echo "    Starting PostgreSQL..."
-    sudo service postgresql start 2>/dev/null || true
+PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | sort -V | tail -1)
+PGBIN="/usr/lib/postgresql/${PG_VERSION}/bin"
+PGDATA="$ROOT/shared/pgdata"
+
+# TimescaleDB shared library for this PG major, if missing
+if [ ! -e "/usr/lib/postgresql/${PG_VERSION}/lib/timescaledb.so" ]; then
+    echo "    Installing TimescaleDB for PostgreSQL ${PG_VERSION}..."
+    DISTRO=$(grep VERSION_CODENAME /etc/os-release 2>/dev/null | cut -d= -f2 || echo "noble")
+    sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys E7391C94080429FF >/dev/null 2>&1
+    sudo apt-key export 080429FF 2>/dev/null | sudo gpg --dearmor -o /usr/share/keyrings/timescaledb.gpg --yes 2>/dev/null
+    echo "deb [signed-by=/usr/share/keyrings/timescaledb.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ ${DISTRO} main" | sudo tee /etc/apt/sources.list.d/timescaledb.list >/dev/null
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "timescaledb-2-postgresql-${PG_VERSION}" >/dev/null 2>&1 || {
+        echo "    [FAIL] TimescaleDB installation failed!"; exit 1; }
+fi
+
+# The default apt cluster must never hold our port
+sudo pg_dropcluster --stop "$PG_VERSION" main 2>/dev/null || true
+
+# Initialize our home-dir cluster once; it survives container rebuilds
+if [ ! -f "$PGDATA/PG_VERSION" ]; then
+    echo "    Initializing PostgreSQL cluster in $PGDATA..."
+    echo "$POSTGRES_PASSWORD" > /tmp/.pgpw && chmod 600 /tmp/.pgpw
+    "$PGBIN/initdb" -D "$PGDATA" -U "$POSTGRES_USER" --pwfile=/tmp/.pgpw --auth=scram-sha-256 -E UTF8 >/dev/null
+    rm -f /tmp/.pgpw
+    cat >> "$PGDATA/postgresql.conf" <<PGCONF
+shared_preload_libraries = 'timescaledb'
+port = ${POSTGRES_PORT}
+listen_addresses = 'localhost'
+unix_socket_directories = '/tmp'
+PGCONF
+fi
+
+if ! "$PGBIN/pg_ctl" -D "$PGDATA" status >/dev/null 2>&1; then
+    "$PGBIN/pg_ctl" -D "$PGDATA" -l "$LOGS/postgres.log" start >/dev/null
     sleep 2
 fi
 
-# Create user and database if needed
 export PGPASSWORD="$POSTGRES_PASSWORD"
-if ! psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT 1" >/dev/null 2>&1; then
-    echo "    Setting up database..."
-    sudo -u postgres psql -c "CREATE USER $POSTGRES_USER WITH PASSWORD '$POSTGRES_PASSWORD';" 2>/dev/null || true
-    sudo -u postgres psql -c "CREATE DATABASE $POSTGRES_DB OWNER $POSTGRES_USER;" 2>/dev/null || true
-    sudo -u postgres psql -c "ALTER USER $POSTGRES_USER CREATEDB;" 2>/dev/null || true
-fi
-
-# Install TimescaleDB
+psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d postgres -c "CREATE DATABASE $POSTGRES_DB OWNER $POSTGRES_USER;" 2>/dev/null || true
 if ! psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT 1" >/dev/null 2>&1; then
     echo "    [FAIL] Cannot connect to PostgreSQL!"
     exit 1
 fi
 
-PG_VERSION=$(psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SHOW server_version_num" 2>/dev/null | head -1 | cut -c1-2)
-HAS_TIMESCALE=$(psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT count(*) FROM pg_available_extensions WHERE name='timescaledb'" 2>/dev/null || echo "0")
-
-if [ "$HAS_TIMESCALE" = "0" ]; then
-    echo "    Installing TimescaleDB for PostgreSQL ${PG_VERSION}..."
-    DISTRO=$(grep VERSION_CODENAME /etc/os-release 2>/dev/null | cut -d= -f2 || echo "noble")
-
-    # Add repo with proper GPG key
-    sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys E7391C94080429FF >/dev/null 2>&1
-    sudo apt-key export 080429FF 2>/dev/null | sudo gpg --dearmor -o /usr/share/keyrings/timescaledb.gpg --yes 2>/dev/null
-    echo "deb [signed-by=/usr/share/keyrings/timescaledb.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ ${DISTRO} main" | sudo tee /etc/apt/sources.list.d/timescaledb.list >/dev/null
-    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null
-
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "timescaledb-2-postgresql-${PG_VERSION}" 2>&1 | tail -3
-    if [ $? -ne 0 ]; then
-        echo "    [FAIL] TimescaleDB installation failed!"
-        exit 1
-    fi
-fi
-
-# Ensure shared_preload_libraries includes timescaledb
-PG_CONF="/etc/postgresql/${PG_VERSION}/main/postgresql.conf"
-if ! grep -q "^shared_preload_libraries.*timescaledb" "$PG_CONF" 2>/dev/null; then
-    echo "    Configuring TimescaleDB preload..."
-    sudo sed -i "s/^#*shared_preload_libraries.*/shared_preload_libraries = 'timescaledb'/" "$PG_CONF" 2>/dev/null
-    sudo service postgresql restart 2>/dev/null
-    sleep 2
-fi
-
-# Create extension and init schema
+# Create extension and init schema (idempotent)
 echo "    Initializing database schema..."
 psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "CREATE EXTENSION IF NOT EXISTS timescaledb;" >/dev/null 2>&1
 psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$ROOT/config/init-db.sql" >/dev/null 2>&1 || true
-echo "    PostgreSQL+TimescaleDB ... OK"
+echo "    PostgreSQL+TimescaleDB ... OK (data: $PGDATA)"
 unset PGPASSWORD
 
 # --- Python Virtual Environment + Dependencies ---
@@ -225,41 +228,64 @@ echo "    [WARN] Some Python packages may be missing"
 
 # ============================================================
 # PHASE 2: Clean state (reset trading data, keep models)
+#          Skipped entirely in --resume mode.
 # ============================================================
-echo ""
-echo "  [PHASE 2] Resetting trading state (keeping best models)..."
+if [ "$RESUME" = true ]; then
+    echo ""
+    echo "  [PHASE 2] RESUME mode - keeping all trading state, DB rows, and logs."
+    rm -f "$LOGS"/*.pid
+    # Safety net: if Redis lost portfolio_state (e.g. AOF gone), restore from
+    # the newest backup snapshot rather than silently starting broken.
+    if [ "$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning EXISTS portfolio_state 2>/dev/null)" != "1" ]; then
+        LATEST_PF=$(ls -1t "$ROOT/shared/backups"/portfolio_*.json 2>/dev/null | head -1)
+        if [ -n "$LATEST_PF" ] && [ -s "$LATEST_PF" ]; then
+            redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning \
+                SET portfolio_state "$(cat "$LATEST_PF")" >/dev/null 2>&1
+            echo "    portfolio_state restored from $(basename "$LATEST_PF")"
+        else
+            PORTFOLIO_JSON="{\"total_capital\":${STARTING_CAPITAL},\"available_capital\":${STARTING_CAPITAL},\"positions_value\":0,\"open_positions\":0,\"starting_capital\":${STARTING_CAPITAL},\"daily_pnl\":0}"
+            redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning SET portfolio_state "$PORTFOLIO_JSON" >/dev/null 2>&1
+            echo "    [WARN] No portfolio backup found - re-seeded with \$${STARTING_CAPITAL}"
+        fi
+    fi
+else
+    echo ""
+    echo "  [PHASE 2] Resetting trading state (keeping best models)..."
 
-# Flush Redis and re-seed
-export PGPASSWORD="$POSTGRES_PASSWORD"
-redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning FLUSHALL >/dev/null 2>&1
-PORTFOLIO_JSON="{\"total_capital\":${STARTING_CAPITAL},\"available_capital\":${STARTING_CAPITAL},\"positions_value\":0,\"open_positions\":0,\"starting_capital\":${STARTING_CAPITAL},\"daily_pnl\":0}"
-redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning SET portfolio_state "$PORTFOLIO_JSON" >/dev/null 2>&1
-echo "    Redis flushed, portfolio seeded with \$${STARTING_CAPITAL}"
+    # Flush Redis and re-seed
+    export PGPASSWORD="$POSTGRES_PASSWORD"
+    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning FLUSHALL >/dev/null 2>&1
+    PORTFOLIO_JSON="{\"total_capital\":${STARTING_CAPITAL},\"available_capital\":${STARTING_CAPITAL},\"positions_value\":0,\"open_positions\":0,\"starting_capital\":${STARTING_CAPITAL},\"daily_pnl\":0}"
+    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning SET portfolio_state "$PORTFOLIO_JSON" >/dev/null 2>&1
+    echo "    Redis flushed, portfolio seeded with \$${STARTING_CAPITAL}"
 
-# Truncate DB tables
-psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
-    DO \$\$
-    DECLARE t TEXT;
-    BEGIN
-        FOR t IN SELECT tablename FROM pg_tables
-                 WHERE schemaname = 'public'
-                   AND tablename IN ('trade_history','portfolio_snapshots','signals','orders','ml_predictions','ticks','candles','positions','sentiment_scores')
-        LOOP
-            EXECUTE 'TRUNCATE TABLE ' || quote_ident(t) || ' CASCADE';
-        END LOOP;
-    END\$\$;
-    INSERT INTO portfolio_snapshots (time, total_value, cash_balance, positions_value, daily_pnl)
-    VALUES (NOW(), $STARTING_CAPITAL, $STARTING_CAPITAL, 0, 0);
-" >/dev/null 2>&1
-unset PGPASSWORD
-echo "    PostgreSQL tables truncated"
+    # Truncate DB tables
+    psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+        DO \$\$
+        DECLARE t TEXT;
+        BEGIN
+            FOR t IN SELECT tablename FROM pg_tables
+                     WHERE schemaname = 'public'
+                       AND tablename IN ('trade_history','portfolio_snapshots','signals','orders','ml_predictions','ticks','candles','positions','sentiment_scores')
+            LOOP
+                EXECUTE 'TRUNCATE TABLE ' || quote_ident(t) || ' CASCADE';
+            END LOOP;
+        END\$\$;
+        INSERT INTO portfolio_snapshots (time, total_value, cash_balance, positions_value, daily_pnl)
+        VALUES (NOW(), $STARTING_CAPITAL, $STARTING_CAPITAL, 0, 0);
+    " >/dev/null 2>&1
+    unset PGPASSWORD
+    echo "    PostgreSQL tables truncated"
 
-# Clear logs
-for logfile in "$LOGS"/*.log; do
-    [ -f "$logfile" ] && > "$logfile"
-done
-rm -f "$LOGS"/*.pid
-echo "    Logs cleared"
+    # Archive previous run's logs - never destroy run records
+    if ls "$LOGS"/*.log >/dev/null 2>&1; then
+        ARCHIVE_STAMP=$(date +%Y%m%d_%H%M%S)
+        mkdir -p "$LOGS/archive/$ARCHIVE_STAMP"
+        mv "$LOGS"/*.log "$LOGS/archive/$ARCHIVE_STAMP/" 2>/dev/null || true
+        echo "    Previous logs archived to logs/archive/$ARCHIVE_STAMP/"
+    fi
+    rm -f "$LOGS"/*.pid
+fi
 
 # ============================================================
 # PHASE 3: Start all services in dependency order
@@ -349,7 +375,16 @@ if [ "$SKIP_DASHBOARD" = false ]; then
         fi
     fi
     cd "$ROOT/dashboard"
-    ./node_modules/.bin/next start -p 3000 > "$LOGS/dashboard.log" 2>&1 &
+    if [ -f ".next/standalone/server.js" ]; then
+        # output:standalone build - "next start" is unsupported; the standalone
+        # server also needs the static assets copied alongside it
+        mkdir -p .next/standalone/.next
+        [ -d ".next/static" ] && cp -r .next/static .next/standalone/.next/ 2>/dev/null || true
+        [ -d "public" ] && cp -r public .next/standalone/ 2>/dev/null || true
+        PORT=3000 HOSTNAME=0.0.0.0 node .next/standalone/server.js > "$LOGS/dashboard.log" 2>&1 &
+    else
+        ./node_modules/.bin/next start -p 3000 > "$LOGS/dashboard.log" 2>&1 &
+    fi
     echo $! > "$LOGS/dashboard.pid"
     cd - > /dev/null
 
@@ -529,12 +564,67 @@ else
     echo "  ║      $UP_COUNT/$TOTAL SERVICES UP                   ║"
 fi
 echo "  ╚══════════════════════════════════════════╝"
+# ============================================================
+# PHASE 6: Cloudflare tunnels + backup loop
+# ============================================================
+echo ""
+echo "  [PHASE 6] Tunnels & backups..."
+CLOUDFLARED="$(command -v cloudflared || true)"
+if [ -z "$CLOUDFLARED" ] && [ -x /home/coder/.local/bin/cloudflared ]; then
+    CLOUDFLARED=/home/coder/.local/bin/cloudflared
+fi
+DASH_URL=""
+API_URL=""
+if [ -n "$CLOUDFLARED" ]; then
+    # --protocol http2: this workspace blocks QUIC/UDP egress; quic dials time out
+    nohup "$CLOUDFLARED" tunnel --protocol http2 --url http://localhost:3000 > "$LOGS/cloudflared-dash.log" 2>&1 &
+    echo $! > "$LOGS/cloudflared-dash.pid"
+    nohup "$CLOUDFLARED" tunnel --protocol http2 --url http://localhost:8080 > "$LOGS/cloudflared-api.log" 2>&1 &
+    echo $! > "$LOGS/cloudflared-api.pid"
+    # quick tunnels print their public URL within a few seconds
+    # (grep returns 1 on no-match - guard every substitution against set -e)
+    for i in $(seq 1 20); do
+        DASH_URL=$(grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" "$LOGS/cloudflared-dash.log" 2>/dev/null | head -1 || true)
+        API_URL=$(grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" "$LOGS/cloudflared-api.log" 2>/dev/null | head -1 || true)
+        if [ -n "$DASH_URL" ] && [ -n "$API_URL" ]; then
+            break
+        fi
+        sleep 1
+    done
+    printf "%s\n%s\n" "${DASH_URL:-}" "${API_URL:-}" > "$LOGS/tunnel-url.txt"
+
+    # Update the fixed Worker pointer so the permanent URL
+    # (https://goblin-api.goblin-anwar.workers.dev) follows the fresh tunnel.
+    # This is what lets the Vercel frontend keep working without redeploys.
+    if [ -n "${CF_API_TOKEN:-}" ] && [ -n "${CF_ACCOUNT_ID:-}" ] && [ -n "${CF_KV_NAMESPACE_ID:-}" ] && [ -n "${API_URL:-}" ]; then
+        if curl -sf -X PUT "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${CF_KV_NAMESPACE_ID}/values/api_origin" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" --data "$API_URL" >/dev/null 2>&1; then
+            echo "    Fixed API URL ...... goblin-api.goblin-anwar.workers.dev -> $API_URL (picked up within ~60s)"
+        else
+            echo "    [WARN] Failed to update workers.dev pointer - frontend will serve stale data"
+        fi
+    fi
+else
+    echo "    [WARN] cloudflared not found - no public tunnels started"
+fi
+
+# Backup loop: pg_dump + portfolio snapshot every 15 min into shared/backups
+if [ -f "$ROOT/scripts/goblin_backup_loop.sh" ]; then
+    nohup bash "$ROOT/scripts/goblin_backup_loop.sh" >/dev/null 2>&1 &
+    echo $! > "$LOGS/backup-loop.pid"
+    echo "    Backup loop ........ running (every 15 min -> shared/backups)"
+fi
+
 echo ""
 echo "  Dashboard:  http://localhost:3000"
 echo "  API:        http://localhost:8080"
+[ -n "$DASH_URL" ] && echo "  Dashboard tunnel: $DASH_URL"
+[ -n "$API_URL" ]  && echo "  API tunnel:       $API_URL"
 
 echo ""
 echo "  Logs:       $LOGS/"
 echo ""
 echo "  To stop:    bash $ROOT/goblin_reset.sh"
+echo "  To resume after a workspace rebuild (no data loss):"
+echo "              bash $ROOT/goblin_start.sh --resume"
 echo ""
