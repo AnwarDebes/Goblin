@@ -30,11 +30,16 @@ class MexcAdapter(ExchangeAdapter):
         self._api_key = api_key
         self._secret_key = secret_key
         self._rest: Optional[ccxt.mexc] = None
+        # Dedicated client for OHLCV so the candle writer never contends with
+        # the 1 Hz ticker poll on one session/throttle (sync ccxt throttle
+        # state is not thread-safe across asyncio.to_thread workers).
+        self._ohlcv: Optional[ccxt.mexc] = None
         self._ws = None
         self._markets_loaded = False
 
     async def connect(self) -> None:
         self._rest = ccxt.mexc({"enableRateLimit": True})
+        self._ohlcv = ccxt.mexc({"enableRateLimit": True})
         if HAS_WS:
             self._ws = ccxtpro.mexc({"enableRateLimit": True})
         logger.info(
@@ -49,11 +54,13 @@ class MexcAdapter(ExchangeAdapter):
                 await self._ws.close()
             except Exception:
                 pass
-        if self._rest:
-            try:
-                self._rest.close()
-            except Exception:
-                pass
+        # Sync ccxt has no close(); the real resource is the requests.Session.
+        for client in (self._rest, self._ohlcv):
+            if client is not None:
+                try:
+                    client.session.close()
+                except Exception:
+                    pass
 
     # ── Volume / liquidity filter thresholds ──────────────────────────
     MIN_24H_VOLUME_USD = 5_000       # Minimum 24h quote volume in USD (relaxed: low vol pairs have big potential)
@@ -253,7 +260,7 @@ class MexcAdapter(ExchangeAdapter):
     ) -> List[list]:
         """Fetch OHLCV candles via REST."""
         return await asyncio.to_thread(
-            self._rest.fetch_ohlcv, symbol, timeframe, since, limit
+            (self._ohlcv or self._rest).fetch_ohlcv, symbol, timeframe, since, limit
         )
 
     @staticmethod

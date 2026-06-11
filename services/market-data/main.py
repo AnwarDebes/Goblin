@@ -5,10 +5,11 @@ Streams real-time prices and writes to both Redis and TimescaleDB.
 import asyncio
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 from contextlib import asynccontextmanager
 
+import ccxt
 import redis.asyncio as aioredis
 import structlog
 from fastapi import FastAPI
@@ -25,6 +26,16 @@ TRADING_PAIRS_FILE = os.getenv("TRADING_PAIRS_FILE", "")
 TRADING_PAIRS_LIMIT_STR = os.getenv("TRADING_PAIRS_LIMIT", "0")
 TRADING_PAIRS_LIMIT = int(TRADING_PAIRS_LIMIT_STR) if TRADING_PAIRS_LIMIT_STR and int(TRADING_PAIRS_LIMIT_STR) > 0 else None
 TRADING_PAIRS = os.getenv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT").split(",")
+
+# Candle writer config — capture raw env BEFORE lifespan may overwrite TRADING_PAIRS
+# (with TRADING_PAIRS_FILE set, the global becomes the full ~1752-symbol MEXC list).
+CANDLE_SYMBOLS = [s.strip() for s in os.getenv("CANDLE_SYMBOLS", os.getenv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT")).split(",") if s.strip()]
+CANDLE_TIMEFRAMES = [tf.strip() for tf in os.getenv("CANDLE_TIMEFRAMES", "1m,5m,15m,1h,4h,1d").split(",") if tf.strip()]
+CANDLE_WRITE_INTERVAL = float(os.getenv("CANDLE_WRITE_INTERVAL", "60"))
+CANDLE_BOOTSTRAP_CANDLES = int(os.getenv("CANDLE_BOOTSTRAP_CANDLES", "300"))
+CANDLE_FETCH_DELAY = float(os.getenv("CANDLE_FETCH_DELAY", "0.2"))
+CANDLE_MAX_SYMBOLS = int(os.getenv("CANDLE_MAX_SYMBOLS", "50"))
+TIMEFRAME_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
 
 # TimescaleDB config
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
@@ -50,6 +61,9 @@ LAST_PRICE = Gauge("market_data_last_price", "Last price", ["symbol"])
 TICK_LATENCY = Histogram("market_data_tick_latency_seconds", "Tick processing latency")
 DB_WRITES = Counter("market_data_db_writes_total", "Total DB writes")
 DB_ERRORS = Counter("market_data_db_errors_total", "Total DB write errors")
+CANDLE_UPSERTS = Counter("market_data_candle_upserts_total", "Candles upserted", ["timeframe"])
+CANDLE_ERRORS = Counter("market_data_candle_errors_total", "Candle writer errors")
+CANDLE_LAST_CYCLE = Gauge("market_data_candle_last_cycle_ts", "Unix ts of last completed candle cycle")
 
 # Global State
 exchange_adapter: Optional[MexcAdapter] = None
@@ -58,6 +72,7 @@ db_pool = None
 last_ticks = {}
 ws_task = None
 rest_task = None
+candle_task = None
 ws_symbols: List[str] = []
 rest_symbols: List[str] = []
 
@@ -127,6 +142,73 @@ async def flush_ticks_to_db():
             # Put failed ticks back (up to a limit to prevent memory growth)
             if len(tick_buffer) < 5000:
                 tick_buffer = batch + tick_buffer
+
+
+async def upsert_candles(rows: List[tuple]) -> None:
+    if not rows or not db_pool:
+        return
+    async with db_pool.acquire() as conn:
+        await conn.executemany(
+            """INSERT INTO candles (time, symbol, timeframe, open, high, low, close, volume)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (time, symbol, timeframe) DO UPDATE
+               SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                   close = EXCLUDED.close, volume = EXCLUDED.volume""",
+            rows,
+        )
+
+
+async def _candle_since_ms(symbol: str, timeframe: str, now_ms: int) -> int:
+    tf_ms = TIMEFRAME_MS[timeframe]
+    async with db_pool.acquire() as conn:
+        last_ms = await conn.fetchval(
+            "SELECT (EXTRACT(EPOCH FROM MAX(time)) * 1000)::BIGINT FROM candles "
+            "WHERE symbol = $1 AND timeframe = $2",
+            symbol, timeframe,
+        )
+    if last_ms is None:
+        return now_ms - CANDLE_BOOTSTRAP_CANDLES * tf_ms
+    # 2-candle overlap so the previously-forming candle gets finalized via upsert
+    return max(int(last_ms) - 2 * tf_ms, now_ms - 1000 * tf_ms)
+
+
+async def run_candle_writer():
+    """Continuously upsert exchange OHLCV so the candles table never goes stale.
+    The newest candle per timeframe is the forming one; DO UPDATE converges it."""
+    symbols = CANDLE_SYMBOLS[:CANDLE_MAX_SYMBOLS]
+    if len(CANDLE_SYMBOLS) > CANDLE_MAX_SYMBOLS:
+        logger.warning("Candle writer symbols truncated", configured=len(CANDLE_SYMBOLS), cap=CANDLE_MAX_SYMBOLS)
+    timeframes = [tf for tf in CANDLE_TIMEFRAMES if tf in TIMEFRAME_MS]
+    logger.info("Candle writer started", symbols=len(symbols), timeframes=timeframes, interval=CANDLE_WRITE_INTERVAL)
+    while True:
+        cycle_start = asyncio.get_event_loop().time()
+        for symbol in symbols:
+            for tf in timeframes:
+                tf_ms = TIMEFRAME_MS[tf]
+                try:
+                    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                    since = await _candle_since_ms(symbol, tf, now_ms)
+                    limit = int(min(1000, (now_ms - since) // tf_ms + 3))
+                    candles = await exchange_adapter.fetch_ohlcv(symbol, tf, since=since, limit=limit)
+                    rows = [
+                        (datetime.fromtimestamp(c[0] / 1000, tz=timezone.utc), symbol, tf,
+                         float(c[1]), float(c[2]), float(c[3]), float(c[4]), float(c[5] or 0.0))
+                        for c in candles
+                        if c and c[1] is not None and c[4] is not None
+                    ]
+                    await upsert_candles(rows)
+                    CANDLE_UPSERTS.labels(timeframe=tf).inc(len(rows))
+                except ccxt.RateLimitExceeded:
+                    CANDLE_ERRORS.inc()
+                    logger.warning("Candle writer rate limited, backing off 10s", symbol=symbol, timeframe=tf)
+                    await asyncio.sleep(10)
+                except Exception as e:
+                    CANDLE_ERRORS.inc()
+                    logger.error("Candle writer error", symbol=symbol, timeframe=tf, error=str(e))
+                await asyncio.sleep(CANDLE_FETCH_DELAY)
+        CANDLE_LAST_CYCLE.set(datetime.now(timezone.utc).timestamp())
+        elapsed = asyncio.get_event_loop().time() - cycle_start
+        await asyncio.sleep(max(5.0, CANDLE_WRITE_INTERVAL - elapsed))
 
 
 async def on_tick(symbol: str, ticker: dict, source: str = "ws"):
@@ -246,7 +328,7 @@ def split_symbols_for_streaming(all_symbols: List[str], ws_count: int) -> tuple:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global exchange_adapter, redis_client, ws_task, rest_task, TRADING_PAIRS
+    global exchange_adapter, redis_client, ws_task, rest_task, candle_task, TRADING_PAIRS
     global ws_symbols, rest_symbols
 
     logger.info("Starting Market Data Service v2.0...")
@@ -311,6 +393,8 @@ async def lifespan(app: FastAPI):
     if db_pool:
         db_flush_task = asyncio.create_task(flush_ticks_to_db())
         tasks.append(db_flush_task)
+        candle_task = asyncio.create_task(run_candle_writer())
+        tasks.append(candle_task)
 
     yield
 
@@ -340,6 +424,7 @@ async def health():
         "symbols_rest": len(rest_symbols),
         "ticks_cached": len(last_ticks),
         "db_enabled": db_pool is not None,
+        "candle_writer": bool(candle_task and not candle_task.done()),
     }
 
 
