@@ -78,6 +78,43 @@ exchange: Optional[ccxt.mexc] = None
 redis_client: Optional[aioredis.Redis] = None
 paper_executor = None
 
+PORTFOLIO_KEY = "portfolio_state"
+DAY_ANCHOR_KEY = "portfolio_day_anchor"
+
+
+async def _merge_portfolio_state(fields: dict) -> dict:
+    """Read-merge-write: update only executor-owned fields, preserve the rest."""
+    raw = await redis_client.get(PORTFOLIO_KEY)
+    state = json.loads(raw) if raw else {}
+    state.update(fields)
+    await redis_client.set(PORTFOLIO_KEY, json.dumps(state))
+    return state
+
+
+async def _true_daily_pnl(total_value: float) -> float:
+    """Daily PnL anchored to portfolio value at first sync of each UTC day."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    anchor = None
+    try:
+        raw = await redis_client.get(DAY_ANCHOR_KEY)
+        anchor = json.loads(raw) if raw else None
+    except Exception:
+        anchor = None
+    if not anchor or anchor.get("date") != today:
+        anchor = {"date": today, "capital": total_value}
+        await redis_client.set(DAY_ANCHOR_KEY, json.dumps(anchor))
+        logger.info("Daily PnL anchor set", date=today, capital=round(total_value, 4))
+    return total_value - float(anchor.get("capital", total_value))
+
+
+async def _count_open_positions() -> int:
+    """Count only status=='open' entries in the positions hash (HLEN counts closed too)."""
+    try:
+        rows = await redis_client.hgetall("positions")
+        return sum(1 for v in rows.values() if json.loads(v).get("status") == "open")
+    except Exception:
+        return 0
+
 
 async def sync_portfolio_balance():
     """Sync portfolio state with actual MEXC balance (live mode only)."""
@@ -87,13 +124,6 @@ async def sync_portfolio_balance():
         if hasattr(exchange, 'apiKey') and exchange.apiKey and exchange.apiKey != "your_mexc_api_key_here":
             balance = await exchange.fetch_balance()
             usdt_balance = balance.get("USDT", {}).get("free", 0) or 0
-
-            portfolio_state_str = await redis_client.get("portfolio_state")
-            portfolio_state = json.loads(portfolio_state_str) if portfolio_state_str else {}
-
-            portfolio_state["available_capital"] = usdt_balance
-            portfolio_state["usdt_free"] = usdt_balance
-            portfolio_state["last_trade_time"] = datetime.utcnow().isoformat()
 
             total_value = usdt_balance
             for coin, coin_data in balance.items():
@@ -110,18 +140,22 @@ async def sync_portfolio_balance():
                         except Exception:
                             pass
 
-            portfolio_state["total_capital"] = total_value
-            # full shape so risk/gateway/dashboard get real live values
-            portfolio_state["positions_value"] = max(total_value - usdt_balance, 0)
-            portfolio_state.setdefault("starting_capital", STARTING_CAPITAL)
-            portfolio_state["daily_pnl"] = total_value - portfolio_state.get("starting_capital", STARTING_CAPITAL)
-            try:
-                open_count = await redis_client.hlen("positions")
-            except Exception:
-                open_count = portfolio_state.get("open_positions", 0)
-            portfolio_state["open_positions"] = open_count
-            await redis_client.set("portfolio_state", json.dumps(portfolio_state))
-            logger.debug("Portfolio balance synced", available_capital=usdt_balance, total_capital=total_value)
+            raw = await redis_client.get(PORTFOLIO_KEY)
+            existing = json.loads(raw) if raw else {}
+            starting_capital = float(existing.get("starting_capital", STARTING_CAPITAL))
+            daily_pnl = await _true_daily_pnl(total_value)
+            await _merge_portfolio_state({
+                "available_capital": usdt_balance,
+                "usdt_free": usdt_balance,
+                "total_capital": total_value,
+                "positions_value": max(total_value - usdt_balance, 0),
+                "starting_capital": starting_capital,
+                "daily_pnl": daily_pnl,
+                "lifetime_pnl": total_value - starting_capital,
+                "open_positions": await _count_open_positions(),
+            })
+            logger.debug("Portfolio balance synced", available_capital=usdt_balance,
+                         total_capital=total_value, daily_pnl=round(daily_pnl, 4))
     except Exception as e:
         logger.error("Failed to sync portfolio balance", error=str(e))
 
@@ -177,15 +211,19 @@ async def execute_paper_order(request: OrderRequest) -> OrderResponse:
         PAPER_PORTFOLIO_VALUE.set(summary.get("total_value", 0))
 
         # Also update portfolio_state in Redis for risk manager
-        portfolio_state = {
+        fields = {
             "available_capital": summary.get("usdt_balance", 0),
+            "usdt_free": summary.get("usdt_balance", 0),
             "total_capital": summary.get("total_value", 0),
+            "positions_value": max(summary.get("total_value", 0) - summary.get("usdt_balance", 0), 0),
             "starting_capital": STARTING_CAPITAL,
-            "daily_pnl": summary.get("pnl", 0),
+            "daily_pnl": await _true_daily_pnl(summary.get("total_value", 0)),
+            "lifetime_pnl": summary.get("pnl", 0),
             "open_positions": len(summary.get("positions", {})),
-            "last_trade_time": datetime.utcnow().isoformat(),
         }
-        await redis_client.set("portfolio_state", json.dumps(portfolio_state))
+        if request.side in ("buy", "short_entry"):
+            fields["last_trade_time"] = datetime.utcnow().isoformat()
+        await _merge_portfolio_state(fields)
 
         return response
 
@@ -371,6 +409,8 @@ async def execute_live_order(request: OrderRequest) -> OrderResponse:
 
         if is_filled:
             await redis_client.publish("filled_orders", response.model_dump_json())
+            if request.side in ("buy", "short_entry"):
+                await _merge_portfolio_state({"last_trade_time": datetime.utcnow().isoformat()})
             await sync_portfolio_balance()
 
         return response
@@ -501,29 +541,35 @@ async def lifespan(app: FastAPI):
             if paper_executor:
                 try:
                     summary = await paper_executor.get_portfolio_summary()
-                    ps = {
+                    await _merge_portfolio_state({
                         "available_capital": summary.get("usdt_balance", 0),
+                        "usdt_free": summary.get("usdt_balance", 0),
                         "total_capital": summary.get("total_value", 0),
+                        "positions_value": max(summary.get("total_value", 0) - summary.get("usdt_balance", 0), 0),
                         "starting_capital": STARTING_CAPITAL,
-                        "daily_pnl": summary.get("pnl", 0),
+                        "daily_pnl": await _true_daily_pnl(summary.get("total_value", 0)),
+                        "lifetime_pnl": summary.get("pnl", 0),
                         "open_positions": len(summary.get("positions", {})),
-                    }
-                    # Preserve last_trade_time from existing state
-                    existing = await redis_client.get("portfolio_state")
-                    if existing:
-                        old = json.loads(existing)
-                        ps["last_trade_time"] = old.get("last_trade_time")
-                    await redis_client.set("portfolio_state", json.dumps(ps))
+                    })
                 except Exception:
                     pass
 
     if PAPER_MODE:
         sync_task = asyncio.create_task(periodic_portfolio_sync())
+    else:
+        # Live mode needs a periodic sync too: rolls the daily-pnl anchor at UTC
+        # midnight and keeps capital fresh between fills.
+        async def periodic_live_sync():
+            while True:
+                await asyncio.sleep(60)
+                await sync_portfolio_balance()
+        sync_task = asyncio.create_task(periodic_live_sync())
 
     logger.info("Executor ready", mode=mode)
 
     yield
 
+    sync_task.cancel()
     listener_task.cancel()
     if paper_executor:
         await paper_executor.close()

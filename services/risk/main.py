@@ -73,6 +73,10 @@ portfolio = Portfolio()
 async def validate_signal(signal: Signal) -> tuple[bool, str, float]:
     global portfolio
 
+    # Validate against live executor-synced state, not values frozen since the
+    # last GET /portfolio.
+    await refresh_portfolio_from_redis()
+
     # Sells/exits bypass ALL risk limits — they must execute in full
     if signal.action in ("sell", "short_exit"):
         return True, "approved", signal.amount
@@ -125,10 +129,12 @@ async def process_signal(signal_data: dict):
             validated = signal_data.copy()
             validated["amount"] = adjusted_amount
             await redis_client.publish("validated_signals", json.dumps(validated))
-            # Only update cooldown timer for new entries (buys/shorts), not exits
+            # Only update cooldown timer for new entries (buys/shorts), not exits.
+            # Approval-time stamp stays in-memory only; the executor writes the
+            # fill-time stamp to redis (single-writer ownership).
             if signal.action in ("buy", "short_entry"):
                 portfolio.last_trade_time = datetime.utcnow().isoformat()
-            await save_portfolio()
+            CAPITAL.set(portfolio.available_capital)
             logger.info("Signal approved", signal_id=signal.signal_id,
                          symbol=signal.symbol, action=signal.action,
                          edge_score=round(signal.edge_score, 3),
@@ -228,9 +234,37 @@ async def load_portfolio():
     CAPITAL.set(portfolio.available_capital)
 
 
-async def save_portfolio():
-    await redis_client.set("portfolio_state", portfolio.model_dump_json())
-    CAPITAL.set(portfolio.available_capital)
+def _later_iso(a: Optional[str], b: Optional[str]) -> Optional[str]:
+    """Return the more recent of two ISO timestamps; tolerate parse failures."""
+    if not a:
+        return b
+    if not b:
+        return a
+    try:
+        return a if datetime.fromisoformat(a) >= datetime.fromisoformat(b) else b
+    except (ValueError, TypeError):
+        return a or b
+
+
+async def refresh_portfolio_from_redis():
+    """Risk is a READER of portfolio_state (executor/position own the fields)."""
+    global portfolio
+    try:
+        data = await redis_client.get("portfolio_state")
+        if not data:
+            return
+        state = json.loads(data)
+        portfolio.total_capital = float(state.get("total_capital", portfolio.total_capital))
+        portfolio.available_capital = float(state.get("available_capital", portfolio.available_capital))
+        portfolio.starting_capital = float(state.get("starting_capital", portfolio.starting_capital))
+        portfolio.daily_pnl = float(state.get("daily_pnl", portfolio.daily_pnl))
+        portfolio.open_positions = int(state.get("open_positions", portfolio.open_positions))
+        # Trade-rate brake: take the most recent of fill-time (redis, executor-owned)
+        # and approval-time (in-memory) timestamps so the brake never loosens.
+        portfolio.last_trade_time = _later_iso(portfolio.last_trade_time, state.get("last_trade_time"))
+        CAPITAL.set(portfolio.available_capital)
+    except Exception as e:
+        logger.warning("Failed to refresh portfolio from redis", error=str(e))
 
 
 @asynccontextmanager
@@ -275,18 +309,8 @@ async def health():
 
 @app.get("/portfolio")
 async def get_portfolio():
-    """Automatically calculate portfolio from positions and MEXC balance"""
-    # Load current portfolio state from Redis (updated by executor/position services)
-    portfolio_state_str = await redis_client.get("portfolio_state")
-    if portfolio_state_str:
-        portfolio_data = json.loads(portfolio_state_str)
-        # Update local portfolio object from executor-synced state (authoritative)
-        portfolio.available_capital = portfolio_data.get("available_capital", portfolio.available_capital)
-        portfolio.total_capital = portfolio_data.get("total_capital", portfolio.total_capital)
-        portfolio.open_positions = portfolio_data.get("open_positions", 0)
-        portfolio.daily_pnl = portfolio_data.get("daily_pnl", 0.0)
-        portfolio.last_trade_time = portfolio_data.get("last_trade_time", portfolio.last_trade_time)
-    
+    """Portfolio view backed by executor/position-owned redis state."""
+    await refresh_portfolio_from_redis()
     return portfolio
 
 
@@ -294,31 +318,6 @@ async def get_portfolio():
 async def get_limits():
     return {"max_position_pct": MAX_POSITION_PCT, "min_position_usd": MIN_POSITION_USD,
             "max_daily_loss_pct": MAX_DAILY_LOSS_PCT, "max_open_positions": "dynamic"}
-
-
-@app.post("/update-capital")
-async def update_capital(amount: float):
-    global portfolio
-    portfolio.available_capital = amount
-    await save_portfolio()
-    return {"available_capital": portfolio.available_capital}
-
-
-@app.post("/position-opened")
-async def position_opened():
-    global portfolio
-    portfolio.open_positions += 1
-    await save_portfolio()
-    return {"open_positions": portfolio.open_positions}
-
-
-@app.post("/position-closed")
-async def position_closed(pnl: float = 0):
-    global portfolio
-    portfolio.open_positions = max(0, portfolio.open_positions - 1)
-    portfolio.daily_pnl += pnl
-    await save_portfolio()
-    return {"open_positions": portfolio.open_positions, "daily_pnl": portfolio.daily_pnl}
 
 
 @app.get("/metrics", response_class=PlainTextResponse)

@@ -92,11 +92,11 @@ async def fetch_trade_performance(symbol: str, lookback_days: int = 30) -> dict:
     try:
         since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
         async with _pool.acquire() as conn:
-            # Try the trades table first (position service writes here)
+            # Closed trades land in trade_history (position service writes here)
             rows = await conn.fetch(
                 """
-                SELECT pnl FROM trades
-                WHERE symbol = $1 AND closed_at >= $2 AND pnl IS NOT NULL
+                SELECT realized_pnl AS pnl FROM trade_history
+                WHERE symbol = $1 AND closed_at >= $2 AND realized_pnl IS NOT NULL
                 ORDER BY closed_at DESC
                 """,
                 symbol,
@@ -120,7 +120,7 @@ async def fetch_trade_performance(symbol: str, lookback_days: int = 30) -> dict:
             "total_trades": total,
         }
     except asyncpg.UndefinedTableError:
-        logger.warning("trades table does not exist yet", symbol=symbol)
+        logger.warning("trade_history table does not exist yet", symbol=symbol)
         return {"win_rate": 0.5, "avg_win": 0.01, "avg_loss": 0.01, "total_trades": 0}
     except Exception as e:
         logger.error("Failed to fetch trade performance", symbol=symbol, error=str(e))

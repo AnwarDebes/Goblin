@@ -307,39 +307,24 @@ async def handle_filled_order(order: dict):
 
 
 async def update_portfolio_state():
-    """Automatically update portfolio state in Redis when positions change"""
+    """Position service owns ONLY positions_value and open_positions.
+    Read-merge-write so executor-owned capital fields are never clobbered."""
     try:
-        # Calculate total portfolio value
-        total_value = 0
-        open_positions_count = 0
-        
-        # Get USDT balance from portfolio state (or calculate from positions)
-        portfolio_state = await redis_client.get("portfolio_state")
-        if portfolio_state:
-            portfolio = json.loads(portfolio_state)
-            total_value = portfolio.get("total_capital", 0)
-            available_capital = portfolio.get("available_capital", 0)
-        else:
-            available_capital = 0
-        
-        # Calculate position values
+        open_count = 0
+        positions_value = 0.0
         for symbol, pos in positions.items():
             if pos.status == "open":
-                open_positions_count += 1
-                # Position value is already included in total_value calculation
-        
-        # Update portfolio state (preserve existing last_trade_time)
-        existing_last_trade = portfolio.get("last_trade_time") if portfolio_state else None
-        new_portfolio_state = {
-            "total_capital": total_value if total_value > 0 else available_capital,
-            "available_capital": available_capital,
-            "daily_pnl": sum(p.realized_pnl for p in positions.values()),
-            "open_positions": open_positions_count,
-            "last_trade_time": existing_last_trade,
-        }
-        
-        await redis_client.set("portfolio_state", json.dumps(new_portfolio_state))
-        logger.debug("Portfolio state updated", open_positions=open_positions_count)
+                open_count += 1
+                price = pos.current_price or pos.entry_price
+                positions_value += price * pos.amount
+
+        raw = await redis_client.get("portfolio_state")
+        state = json.loads(raw) if raw else {}
+        state["positions_value"] = round(positions_value, 8)
+        state["open_positions"] = open_count
+        await redis_client.set("portfolio_state", json.dumps(state))
+        logger.debug("Portfolio state updated", open_positions=open_count,
+                     positions_value=round(positions_value, 2))
     except Exception as e:
         logger.error("Failed to update portfolio state", error=str(e))
 

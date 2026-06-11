@@ -110,48 +110,58 @@ async def periodic_ai_summary():
 
 
 async def _take_portfolio_snapshot():
-    """Insert a portfolio snapshot into TimescaleDB. Reused by periodic and event-driven triggers."""
-    if db_pool is None or http_client is None:
+    """Insert a portfolio snapshot into TimescaleDB. Reused by periodic and event-driven triggers.
+
+    Source of truth: Redis portfolio_state (written by executor in live mode).
+    Fallback: risk /portfolio, which serves the same state over HTTP."""
+    if db_pool is None:
         return
 
     total_value = 0.0
     cash = 0.0
     daily_pnl = 0.0
+    positions_value = 0.0
+    open_positions = 0
 
-    # Fetch from executor (primary source)
+    # Primary: Redis portfolio_state (single source of truth, real in both paper and live)
     try:
-        bal_resp = await http_client.get(f"{SERVICES['executor']}/balance", timeout=5.0)
-        if bal_resp.status_code == 200:
-            bal_data = bal_resp.json()
-            summary = bal_data.get("summary", {})
-            total_value = float(summary.get("total_value", 0))
-            cash = float(summary.get("usdt_balance", 0))
-            daily_pnl = float(summary.get("pnl", 0))
-    except Exception:
-        pass
+        raw = await redis_client.get("portfolio_state")
+        if raw:
+            ps = json.loads(raw)
+            total_value = float(ps.get("total_capital", 0) or 0)
+            cash = float(ps.get("available_capital", 0) or 0)
+            daily_pnl = float(ps.get("daily_pnl", 0) or 0)
+            positions_value = float(ps.get("positions_value", max(0.0, total_value - cash)) or 0)
+            open_positions = int(ps.get("open_positions", 0) or 0)
+    except Exception as e:
+        logger.warning("portfolio_state read failed for snapshot", error=str(e))
 
-    # Fallback to risk service
-    if total_value == 0:
+    # Fallback: risk /portfolio (publishes total_capital, NOT total_value)
+    if total_value <= 0 and http_client is not None:
         try:
             risk_resp = await http_client.get(f"{SERVICES['risk']}/portfolio", timeout=5.0)
             if risk_resp.status_code == 200:
                 risk_data = risk_resp.json()
-                total_value = float(risk_data.get("total_value", 0))
-                cash = float(risk_data.get("available_capital", 0))
-                daily_pnl = float(risk_data.get("daily_pnl", 0))
+                total_value = float(risk_data.get("total_capital", 0) or 0)
+                cash = float(risk_data.get("available_capital", 0) or 0)
+                daily_pnl = float(risk_data.get("daily_pnl", 0) or 0)
+                positions_value = max(0.0, total_value - cash)
+                open_positions = int(risk_data.get("open_positions", 0) or 0)
         except Exception:
             pass
 
-    positions_value = max(0.0, total_value - cash)
+    if total_value <= 0:
+        logger.warning("Skipping portfolio snapshot: no portfolio value available")
+        return
 
-    if total_value > 0:
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                """INSERT INTO portfolio_snapshots (time, total_value, cash_balance, positions_value, daily_pnl)
-                   VALUES (NOW(), $1, $2, $3, $4)""",
-                total_value, cash, positions_value, daily_pnl,
-            )
-        logger.debug("Portfolio snapshot saved", total_value=round(total_value, 2))
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO portfolio_snapshots (time, total_value, cash_balance, positions_value, daily_pnl, open_positions)
+               VALUES (NOW(), $1, $2, $3, $4, $5)
+               ON CONFLICT (time) DO NOTHING""",
+            total_value, cash, positions_value, daily_pnl, open_positions,
+        )
+    logger.debug("Portfolio snapshot saved", total_value=round(total_value, 2), open_positions=open_positions)
 
 
 async def periodic_portfolio_snapshot():
