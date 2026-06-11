@@ -271,8 +271,6 @@ else
                 EXECUTE 'TRUNCATE TABLE ' || quote_ident(t) || ' CASCADE';
             END LOOP;
         END\$\$;
-        INSERT INTO portfolio_snapshots (time, total_value, cash_balance, positions_value, daily_pnl)
-        VALUES (NOW(), $STARTING_CAPITAL, $STARTING_CAPITAL, 0, 0);
     " >/dev/null 2>&1
     unset PGPASSWORD
     echo "    PostgreSQL tables truncated"

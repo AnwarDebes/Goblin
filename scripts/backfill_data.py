@@ -346,7 +346,8 @@ async def main():
             )
 
     await pool.close()
-    await exchange.close()
+    # Sync ccxt has no close(); release the underlying requests session instead.
+    exchange.session.close()
 
     elapsed = time.time() - start_time
     print(f"\nBackfill complete in {elapsed:.1f}s ({completed}/{total_tasks} tasks)")

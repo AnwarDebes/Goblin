@@ -24,14 +24,15 @@ CREATE TABLE IF NOT EXISTS orders (
     order_id VARCHAR(100) UNIQUE NOT NULL,
     exchange_order_id VARCHAR(100),
     symbol VARCHAR(20) NOT NULL,
-    side VARCHAR(4) NOT NULL,
+    side VARCHAR(20) NOT NULL,
     order_type VARCHAR(20) NOT NULL,
     status VARCHAR(20) NOT NULL,
     price DECIMAL(20, 8),
     amount DECIMAL(20, 8) NOT NULL,
     filled DECIMAL(20, 8) DEFAULT 0,
     cost DECIMAL(20, 8) DEFAULT 0,
-    fee DECIMAL(20, 8) DEFAULT 0
+    fee DECIMAL(20, 8) DEFAULT 0,
+    mode VARCHAR(10)
 );
 
 -- Positions
@@ -54,7 +55,7 @@ CREATE TABLE IF NOT EXISTS signals (
     time TIMESTAMPTZ NOT NULL,
     signal_id VARCHAR(100) NOT NULL,
     symbol VARCHAR(20) NOT NULL,
-    action VARCHAR(10) NOT NULL,
+    action VARCHAR(20) NOT NULL,
     confidence DECIMAL(5, 4) NOT NULL,
     price DECIMAL(20, 8) NOT NULL,
     executed BOOLEAN DEFAULT FALSE,
@@ -68,13 +69,11 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     total_value DECIMAL(20, 8) NOT NULL,
     cash_balance DECIMAL(20, 8) NOT NULL,
     positions_value DECIMAL(20, 8) NOT NULL,
-    daily_pnl DECIMAL(20, 8) NOT NULL
+    daily_pnl DECIMAL(20, 8) NOT NULL,
+    open_positions INTEGER NOT NULL DEFAULT 0
 );
 SELECT create_hypertable('portfolio_snapshots', 'time', if_not_exists => TRUE);
-
--- Initial portfolio
-INSERT INTO portfolio_snapshots (time, total_value, cash_balance, positions_value, daily_pnl)
-VALUES (NOW(), 1000.00, 1000.00, 0, 0) ON CONFLICT DO NOTHING;
+ALTER TABLE portfolio_snapshots ADD COLUMN IF NOT EXISTS open_positions INTEGER NOT NULL DEFAULT 0;
 
 -- =============================================
 -- NEW TABLES (v2.0)

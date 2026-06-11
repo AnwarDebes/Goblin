@@ -123,14 +123,9 @@ if psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRE
                 EXECUTE 'TRUNCATE TABLE ' || quote_ident(t) || ' CASCADE';
             END LOOP;
 
-            -- Re-seed portfolio snapshot if table exists
-            IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='portfolio_snapshots') THEN
-                EXECUTE format('INSERT INTO portfolio_snapshots (time, total_value, cash_balance, positions_value, daily_pnl) VALUES (NOW(), %s, %s, 0, 0)', $STARTING_CAPITAL, $STARTING_CAPITAL);
-            END IF;
         END\$\$;
 SQL
     echo "    Truncated all trading tables."
-    echo "    Seeded initial portfolio snapshot."
 else
     echo "    [WARN] PostgreSQL not running — skip (will be set up on start)."
 fi

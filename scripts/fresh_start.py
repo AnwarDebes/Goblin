@@ -106,12 +106,16 @@ def clean_redis(dry_run: bool = False):
     r.flushall()
     print(f"  FLUSHED all {db_size} keys")
 
-    # Re-seed starting portfolio state
+    # Re-seed starting portfolio state (full shape, matching executor's merge writes)
     portfolio_state = {
         "total_capital": STARTING_CAPITAL,
         "available_capital": STARTING_CAPITAL,
+        "usdt_free": STARTING_CAPITAL,
         "positions_value": 0,
         "open_positions": 0,
+        "starting_capital": STARTING_CAPITAL,
+        "daily_pnl": 0,
+        "lifetime_pnl": 0,
     }
     r.set("portfolio_state", json.dumps(portfolio_state))
     print(f"  Seeded portfolio_state: ${STARTING_CAPITAL:.2f}")
@@ -180,18 +184,8 @@ def clean_postgres(dry_run: bool = False):
             conn.rollback()
             print(f"  [WARN] Could not truncate {table}: {e}")
 
-    # Re-seed initial portfolio snapshot
-    try:
-        cur.execute(
-            """INSERT INTO portfolio_snapshots (time, total_value, cash_balance, positions_value, daily_pnl)
-               VALUES (NOW(), %s, %s, 0, 0)""",
-            (STARTING_CAPITAL, STARTING_CAPITAL),
-        )
-        print(f"  Seeded portfolio_snapshots: ${STARTING_CAPITAL:.2f}")
-    except Exception as e:
-        conn.rollback()
-        print(f"  [WARN] Could not seed portfolio_snapshots: {e}")
-
+    # No snapshot seeding: the api-gateway recorder writes the first real
+    # snapshot within 5 minutes of services coming up.
     conn.commit()
     cur.close()
     conn.close()
@@ -246,16 +240,8 @@ def clean_postgres_asyncpg(dry_run: bool = False):
             except Exception as e:
                 print(f"  [WARN] Could not truncate {table}: {e}")
 
-        try:
-            await conn.execute(
-                """INSERT INTO portfolio_snapshots (time, total_value, cash_balance, positions_value, daily_pnl)
-                   VALUES (NOW(), $1, $2, 0, 0)""",
-                STARTING_CAPITAL, STARTING_CAPITAL,
-            )
-            print(f"  Seeded portfolio_snapshots: ${STARTING_CAPITAL:.2f}")
-        except Exception as e:
-            print(f"  [WARN] Could not seed portfolio_snapshots: {e}")
-
+        # No snapshot seeding: the api-gateway recorder writes the first real
+        # snapshot within 5 minutes of services coming up.
         await conn.close()
         print(f"  PostgreSQL cleanup complete")
         return True
