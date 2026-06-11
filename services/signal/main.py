@@ -13,7 +13,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict
 from contextlib import asynccontextmanager
 
@@ -45,6 +45,11 @@ circuit_breaker_active = False
 circuit_breaker_until: Optional[datetime] = None
 TRADING_PAIRS_FILE = os.getenv("TRADING_PAIRS_FILE", "")
 TRADING_PAIRS = os.getenv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT").split(",")
+
+# Data-age gate: refuse NEW entries when the newest 1m candle behind the
+# feature vector is older than this. Catches a dead candle pipeline while
+# ticks/predictions keep flowing. Exits are never blocked.
+MAX_DATA_AGE_MINUTES = float(os.getenv("MAX_DATA_AGE_MINUTES", 10))
 
 # v13: Symbol blacklist — persistently losing symbols that drain capital.
 # These 9 symbols accounted for -$26 in losses (nearly 2x the system's total profit).
@@ -122,6 +127,22 @@ async def _get_features(symbol: str) -> Dict[str, float]:
     except Exception:
         pass
     return {}
+
+
+def _candle_age_minutes(features: Dict) -> Optional[float]:
+    """Minutes since the newest 1m candle underlying the feature vector.
+    Returns None when no candle timestamp is available (features missing/
+    expired) — callers MUST treat None as stale (fail closed)."""
+    raw = features.get("_last_candle_time")
+    if not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(raw))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds() / 60.0
+    except (TypeError, ValueError):
+        return None
 
 
 async def _get_portfolio_value() -> float:
@@ -378,6 +399,21 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
     # LAYER A: Regime Filter
     # ══════════════════════════════════════════════════════════════════
     features = await _get_features(symbol)
+
+    # ══════════════════════════════════════════════════════════════════
+    # LAYER A0: Data-age gate — never open positions on stale market data
+    # ══════════════════════════════════════════════════════════════════
+    if action in ("buy", "short_entry"):
+        candle_age_min = _candle_age_minutes(features)
+        if candle_age_min is None or candle_age_min > MAX_DATA_AGE_MINUTES:
+            SIGNALS_SKIPPED.labels(reason="stale_data").inc()
+            logger.warning("Entry blocked - stale market data",
+                           symbol=symbol,
+                           candle_age_min=round(candle_age_min, 1) if candle_age_min is not None else None,
+                           max_age_min=MAX_DATA_AGE_MINUTES,
+                           features_present=bool(features))
+            return None
+
     regime = classify_regime(features, symbol)
     last_regime[symbol] = regime
     REGIME_CLASSIFICATIONS.labels(regime=regime.regime).inc()
@@ -492,7 +528,7 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
     # ══════════════════════════════════════════════════════════════════
     if action in ("buy", "short_entry"):
         available = await _get_available_capital()
-        MIN_TRADE_VALUE = 5.0
+        MIN_TRADE_VALUE = float(os.getenv("MIN_POSITION_USD", "5.0"))
         if available < MIN_TRADE_VALUE:
             SIGNALS_SKIPPED.labels(reason="insufficient_balance").inc()
             return None
@@ -717,27 +753,24 @@ async def listen_for_position_updates():
                     symbol_consecutive_losses.pop(symbol, None)
 
 
-async def sync_balance_from_mexc():
-    """Fetch real balance from executor service and update Redis portfolio_state"""
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get("http://localhost:8005/balance")
-            if response.status_code == 200:
-                data = response.json()
-                balances = data.get("balances", {})
-                usdt_balance = balances.get("USDT", {}).get("free", 0)
-                portfolio_state = {
-                    "total_capital": usdt_balance,
-                    "available_capital": usdt_balance,
-                    "daily_pnl": 0,
-                    "open_positions": 0
-                }
-                await redis_client.set("portfolio_state", json.dumps(portfolio_state))
-                logger.info(f"Synced USDT balance: ${usdt_balance:.2f}")
-                return usdt_balance
-    except Exception as e:
-        logger.warning(f"Could not sync balance: {e}")
-    return None
+async def wait_for_portfolio_state(timeout_s: float = 60.0, interval_s: float = 2.0) -> bool:
+    """Wait for executor-owned portfolio_state to appear in Redis. READ-ONLY:
+    the executor is the single writer of capital fields."""
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            raw = await redis_client.get("portfolio_state")
+            if raw:
+                state = json.loads(raw)
+                logger.info("portfolio_state available",
+                            total_capital=state.get("total_capital"),
+                            available_capital=state.get("available_capital"))
+                return True
+        except Exception as e:
+            logger.warning(f"portfolio_state read failed: {e}")
+        await asyncio.sleep(interval_s)
+    logger.warning(f"portfolio_state missing after {timeout_s}s - sizing falls back to STARTING_CAPITAL")
+    return False
 
 
 def load_symbols_from_file(filepath: str, wait_seconds: int = 60) -> list:
@@ -772,7 +805,7 @@ async def lifespan(app: FastAPI):
     else:
         TRADING_PAIRS = [s.strip() for s in os.getenv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT").split(",") if s.strip()]
 
-    await sync_balance_from_mexc()
+    await wait_for_portfolio_state()
 
     positions = await redis_client.hgetall("positions")
     for symbol, data in positions.items():
@@ -817,7 +850,8 @@ async def health():
     return {
         "status": "healthy",
         "version": "2.0.0",
-        "strategy_layers": ["regime_filter", "edge_gate", "vol_sizing"],
+        "strategy_layers": ["data_age_gate", "regime_filter", "edge_gate", "vol_sizing"],
+        "max_data_age_minutes": MAX_DATA_AGE_MINUTES,
         "positions_tracked": len(current_positions),
     }
 
