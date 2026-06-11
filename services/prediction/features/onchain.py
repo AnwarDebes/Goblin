@@ -5,6 +5,7 @@ Returns a flat dict of on-chain metrics normalised for model consumption.
 """
 
 import json
+import os
 from typing import Dict, Optional
 
 import httpx
@@ -13,7 +14,7 @@ import structlog
 
 logger = structlog.get_logger()
 
-FEATURE_STORE_URL = "http://feature-store:8003"
+FEATURE_STORE_URL = os.getenv("FEATURE_STORE_URL", "http://localhost:8007")
 
 ONCHAIN_KEYS = [
     "whale_activity_score",
@@ -56,25 +57,51 @@ async def fetch_onchain_features(
     url = feature_store_url or FEATURE_STORE_URL
     client = _get_http_client()
 
-    # Attempt 1: feature-store HTTP (single attempt, short timeout)
+    # Attempt 1: feature-store HTTP (single attempt, short timeout).
+    # Require at least one real onchain key in the response before claiming
+    # the source — a 200 with no onchain keys is NOT available data.
     try:
-        resp = await client.get(f"{url}/features/{symbol}")
+        resp = await client.get(f"{url}/features/{symbol.replace('/', '_')}")
         if resp.status_code == 200:
             data = resp.json()
-            result = {k: float(data.get(k, 0.0)) for k in ONCHAIN_KEYS}
-            result["_source"] = "feature_store"
-            return result
+            present = [k for k in ONCHAIN_KEYS if k in data]
+            if present:
+                result = {k: float(data.get(k, 0.0)) for k in ONCHAIN_KEYS}
+                result["_source"] = "feature_store"
+                return result
     except Exception:
         pass
 
-    # Attempt 2: Redis
+    # Attempt 2: Redis — trends:{symbol} written by trend-analysis (JSON string).
     if redis_client is not None:
         try:
-            raw = await redis_client.hgetall(f"onchain:{symbol}")
+            raw = await redis_client.get(f"trends:{symbol}")
             if raw:
-                result = {k: float(raw.get(k, 0.0)) for k in ONCHAIN_KEYS}
-                result["_source"] = "redis"
-                return result
+                d = json.loads(raw)
+                em = d.get("exchange_metrics") or {}
+                gt = d.get("google_trends") or {}
+                sv = d.get("social_volume") or {}
+                wf = d.get("whale_flow") or {}
+                result = {k: 0.0 for k in ONCHAIN_KEYS}
+                found = False
+                if em.get("funding_rate") is not None:
+                    result["funding_rate"] = float(em["funding_rate"])
+                    found = True
+                if gt.get("current_interest") is not None:
+                    result["google_trends_score"] = float(gt["current_interest"])
+                    found = True
+                if sv.get("z_score") is not None:
+                    result["social_volume_zscore"] = float(sv["z_score"])
+                    found = True
+                if wf.get("net_flow_score") is not None:
+                    result["whale_activity_score"] = float(wf["net_flow_score"])
+                    found = True
+                if wf.get("net_flow_usd") is not None:
+                    result["exchange_netflow"] = float(wf["net_flow_usd"])
+                    found = True
+                if found:
+                    result["_source"] = "redis"
+                    return result
         except Exception:
             pass
 

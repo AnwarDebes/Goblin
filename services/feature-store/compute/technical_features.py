@@ -262,6 +262,16 @@ async def compute_technical_features(
             "bid_ask_spread_pct": 0.0, "vwap_deviation_pct": 0.0,
         }
 
+    # Honest data-age stamp: open time of the newest 1m candle these features
+    # are computed from. Signal service gates entries on this, NOT on
+    # _computed_at (which is fresh even when candles are stale).
+    newest_candle_time = candles[-1]["time"]
+    features["_last_candle_time"] = (
+        newest_candle_time.isoformat()
+        if hasattr(newest_candle_time, "isoformat")
+        else str(newest_candle_time)
+    )
+
     closes = np.array([c["close"] for c in candles])
     highs = np.array([c["high"] for c in candles])
     lows = np.array([c["low"] for c in candles])

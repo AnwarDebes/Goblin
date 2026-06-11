@@ -27,6 +27,7 @@ from db import TrendDB
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
+TRADING_PAIRS = [s.strip() for s in os.getenv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT").split(",") if s.strip()]
 
 GOOGLE_TRENDS_INTERVAL = int(os.getenv("GOOGLE_TRENDS_INTERVAL", 14400))  # 4 hours
 SOCIAL_VOLUME_INTERVAL = int(os.getenv("SOCIAL_VOLUME_INTERVAL", 900))  # 15 minutes
@@ -46,10 +47,10 @@ FUNDING_RATE_GAUGE = Gauge("trend_funding_rate", "Exchange funding rate", ["symb
 trend_cache: Dict[str, dict] = {}
 redis_client: Optional[aioredis.Redis] = None
 
-# Components
-google_trends = GoogleTrendsCollector()
-whale_tracker = WhaleTracker()
-exchange_metrics = ExchangeMetricsCollector()
+# Components — all collectors track the tradable universe only
+google_trends = GoogleTrendsCollector(pairs=TRADING_PAIRS)
+whale_tracker = WhaleTracker(pairs=TRADING_PAIRS)
+exchange_metrics = ExchangeMetricsCollector(pairs=TRADING_PAIRS)
 db = TrendDB()
 
 
@@ -83,9 +84,14 @@ async def _store_trends(symbol: str, data: dict, metric_type: str):
         ex=86400,
     )
 
-    # Write to TimescaleDB
-    value = data.get("score", data.get("value", data.get("z_score", 0.0)))
-    if isinstance(value, (int, float)):
+    # Write to TimescaleDB — pick the first real numeric this metric type carries
+    # (exchange_metrics: funding_rate, google_trends: current_interest).
+    value = None
+    for key in ("score", "value", "z_score", "funding_rate", "current_interest", "net_flow_score"):
+        if isinstance(data.get(key), (int, float)):
+            value = data[key]
+            break
+    if value is not None:
         metadata = json.dumps(data, default=str)
         await db.batch_insert([(now, symbol, metric_type, float(value), metadata)])
 
@@ -130,7 +136,7 @@ async def _collect_social_volume():
         try:
             COLLECT_COUNT.labels(source="social_volume").inc()
             r = await _get_redis()
-            collector = SocialVolumeCollector(r)
+            collector = SocialVolumeCollector(r, pairs=TRADING_PAIRS)
             with PROCESSING_TIME.labels(source="social_volume").time():
                 results = await collector.fetch()
                 for symbol, data in results.items():

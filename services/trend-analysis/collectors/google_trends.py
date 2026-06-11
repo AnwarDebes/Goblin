@@ -34,8 +34,13 @@ BATCH_SIZE = 5
 class GoogleTrendsCollector:
     """Collects Google Trends interest data for crypto search terms."""
 
-    def __init__(self):
+    def __init__(self, pairs=None):
         self._pytrends = None
+        # Track only the tradable universe when given; full list otherwise.
+        self.search_terms = (
+            {t: s for t, s in SEARCH_TERMS.items() if s in set(pairs)}
+            if pairs else dict(SEARCH_TERMS)
+        )
 
     def _get_pytrends(self):
         if self._pytrends is None:
@@ -59,7 +64,7 @@ class GoogleTrendsCollector:
             return {}
 
         results: Dict[str, dict] = {}
-        terms = list(SEARCH_TERMS.keys())
+        terms = list(self.search_terms.keys())
         now = datetime.now(timezone.utc)
 
         for i in range(0, len(terms), BATCH_SIZE):
@@ -80,7 +85,7 @@ class GoogleTrendsCollector:
                             latest_value = int(interest[term].iloc[-1])
                             # Get average over period
                             avg_value = float(interest[term].mean())
-                            symbol = SEARCH_TERMS[term]
+                            symbol = self.search_terms[term]
 
                             results[symbol] = {
                                 "symbol": symbol,

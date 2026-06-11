@@ -6,6 +6,7 @@ import redis.asyncio as aioredis
 
 from .technical_features import compute_technical_features
 from .sentiment_features import compute_sentiment_features
+from .onchain_features import compute_onchain_features
 
 
 # Normalization ranges: (min_val, max_val) for mapping to 0-1
@@ -40,6 +41,12 @@ NORMALIZE_RANGES: dict[str, tuple[float, float]] = {
     "sentiment_volume": (0.0, 1000.0),
     "fear_greed_index": (0.0, 100.0),
     "sentiment_divergence": (-1.0, 1.0),
+    # On-chain / market-structure features (from trend-analysis)
+    "funding_rate": (-0.01, 0.01),
+    "whale_activity_score": (-1.0, 1.0),
+    "google_trends_score": (0.0, 100.0),
+    "social_volume_zscore": (-4.0, 4.0),
+    "exchange_netflow": (-10_000_000.0, 10_000_000.0),
 }
 
 
@@ -63,14 +70,16 @@ async def compute_combined_features(
     - Raw features keyed as their original names
     - Normalized features keyed as "{name}_norm"
     """
-    # Compute both feature sets
+    # Compute all feature sets
     technical = await compute_technical_features(symbol, redis_client)
     sentiment = await compute_sentiment_features(symbol, redis_client)
+    onchain = await compute_onchain_features(symbol, redis_client)
 
     # Merge into one dict (raw values)
     raw_features: dict[str, float] = {}
     raw_features.update(technical)
     raw_features.update(sentiment)
+    raw_features.update(onchain)
 
     # Build combined dict with both raw and normalized
     combined: dict[str, float] = {}

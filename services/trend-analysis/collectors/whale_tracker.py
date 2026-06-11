@@ -48,8 +48,13 @@ class WhaleTransaction(BaseModel):
 class WhaleTracker:
     """Tracks large crypto transactions using Whale Alert API."""
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, pairs: Optional[List[str]] = None):
         self.api_key = api_key or WHALE_ALERT_API_KEY
+        # Track only the tradable universe when given; full mapping otherwise.
+        self.blockchain_to_symbol = (
+            {b: s for b, s in BLOCKCHAIN_TO_SYMBOL.items() if s in set(pairs)}
+            if pairs else dict(BLOCKCHAIN_TO_SYMBOL)
+        )
         self._client: Optional[httpx.AsyncClient] = None
         self._recent_alerts: List[WhaleTransaction] = []
         self._max_alerts = 500
@@ -104,7 +109,7 @@ class WhaleTracker:
 
             for tx in data.get("transactions", []):
                 blockchain = tx.get("blockchain", "").lower()
-                symbol = BLOCKCHAIN_TO_SYMBOL.get(blockchain)
+                symbol = self.blockchain_to_symbol.get(blockchain)
                 if not symbol:
                     continue
 

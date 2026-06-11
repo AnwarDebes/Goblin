@@ -108,15 +108,21 @@ async def compute_sentiment_features(
             features["sentiment_score"] = max(
                 -1.0, min(1.0, _safe_float(data.get("score", 0.0)))
             )
-            features["sentiment_volume"] = _safe_float(data.get("mentions", 0.0))
+            features["sentiment_volume"] = _safe_float(data.get("mentions", data.get("sample_count", 0.0)))
     except Exception as e:
         logger.debug("No Redis sentiment data", symbol=symbol, error=str(e))
 
-    # Fear & Greed Index from Redis
+    # Fear & Greed Index from Redis — stored as a JSON object
+    # {"value": .., "classification": .., "normalized_score": .., "timestamp": ..}
     try:
         fg_raw = await redis_client.get("fear_greed_index")
         if fg_raw:
-            features["fear_greed_index"] = max(0.0, min(100.0, _safe_float(fg_raw)))
+            try:
+                fg = json.loads(fg_raw)
+                fg_val = _safe_float(fg.get("value"), 50.0) if isinstance(fg, dict) else _safe_float(fg, 50.0)
+            except (ValueError, TypeError):
+                fg_val = _safe_float(fg_raw, 50.0)
+            features["fear_greed_index"] = max(0.0, min(100.0, fg_val))
     except Exception as e:
         logger.debug("No fear/greed index in Redis", error=str(e))
 

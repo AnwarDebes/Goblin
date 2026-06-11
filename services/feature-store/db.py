@@ -45,6 +45,15 @@ def _timeframe_to_interval(timeframe: str) -> str:
     return mapping.get(timeframe, "1 minute")
 
 
+# Stored candles older than max(this, 2 * timeframe) are considered stale and
+# the tick-derived fallback kicks in (candle-writer outage protection).
+CANDLE_MAX_AGE_MINUTES = float(os.getenv("CANDLE_MAX_AGE_MINUTES", "5"))
+
+
+def _timeframe_to_minutes(timeframe: str) -> int:
+    return {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}.get(timeframe, 1)
+
+
 async def init_pool() -> asyncpg.Pool:
     """Create and return the asyncpg connection pool."""
     global _pool
@@ -106,10 +115,23 @@ async def fetch_candles(
             except asyncpg.UndefinedTableError:
                 rows = []
 
-            # Fallback path: derive candles from raw ticks when candles table is empty/unavailable.
-            if not rows:
+            # Determine staleness of newest stored candle (rows are ORDER BY time DESC).
+            stale = False
+            if rows:
+                newest = rows[0]["time"]
+                if newest.tzinfo is None:
+                    newest = newest.replace(tzinfo=timezone.utc)
+                tf_min = _timeframe_to_minutes(timeframe)
+                max_age = timedelta(minutes=max(CANDLE_MAX_AGE_MINUTES, 2 * tf_min))
+                stale = (datetime.now(timezone.utc) - newest) > max_age
+
+            # Fallback path: derive candles from raw ticks when candles are missing OR stale.
+            if not rows or stale:
                 interval = _timeframe_to_interval(timeframe)
-                rows = await conn.fetch(
+                since = datetime.now(timezone.utc) - timedelta(
+                    minutes=_timeframe_to_minutes(timeframe) * (limit + 2)
+                )
+                tick_rows = await conn.fetch(
                     f"""
                     WITH bucketed AS (
                         SELECT
@@ -120,7 +142,7 @@ async def fetch_candles(
                             last(price, time) AS close,
                             sum(COALESCE(volume, 0)) AS volume
                         FROM ticks
-                        WHERE symbol = $1
+                        WHERE symbol = $1 AND time >= $3
                         GROUP BY bucket
                         ORDER BY bucket DESC
                         LIMIT $2
@@ -131,7 +153,11 @@ async def fetch_candles(
                     """,
                     symbol,
                     limit,
+                    since,
                 )
+                # Keep stale stored candles if ticks yield nothing.
+                if tick_rows:
+                    rows = tick_rows
         # Return in chronological order (oldest first)
         return [
             {

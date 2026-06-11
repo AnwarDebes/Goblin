@@ -5,6 +5,7 @@ Returns a flat dict of sentiment-related features normalised to [-1, 1] or [0, 1
 """
 
 import json
+import os
 from typing import Dict, Optional
 
 import httpx
@@ -13,7 +14,7 @@ import structlog
 
 logger = structlog.get_logger()
 
-FEATURE_STORE_URL = "http://feature-store:8003"
+FEATURE_STORE_URL = os.getenv("FEATURE_STORE_URL", "http://localhost:8007")
 
 SENTIMENT_KEYS = [
     "sentiment_score",
@@ -59,21 +60,27 @@ async def fetch_sentiment_features(
 
     # Attempt 1: feature-store HTTP (single attempt, short timeout)
     try:
-        resp = await client.get(f"{url}/features/{symbol}")
+        resp = await client.get(f"{url}/features/{symbol.replace('/', '_')}")
         if resp.status_code == 200:
             data = resp.json()
-            result = {k: float(data.get(k, 0.0)) for k in SENTIMENT_KEYS}
-            result["_source"] = "feature_store"
-            return result
+            present = [k for k in SENTIMENT_KEYS if k in data]
+            if present:
+                result = {k: float(data.get(k, 0.0)) for k in SENTIMENT_KEYS}
+                result["_source"] = "feature_store"
+                return result
     except Exception:
         pass
 
-    # Attempt 2: Redis
+    # Attempt 2: Redis — sentiment:{symbol} is a JSON string written with SET
+    # by sentiment-analysis ({symbol, score, sample_count, updated_at}).
     if redis_client is not None:
         try:
-            raw = await redis_client.hgetall(f"sentiment:{symbol}")
+            raw = await redis_client.get(f"sentiment:{symbol}")
             if raw:
-                result = {k: float(raw.get(k, 0.0)) for k in SENTIMENT_KEYS}
+                d = json.loads(raw)
+                result = {k: 0.0 for k in SENTIMENT_KEYS}
+                result["sentiment_score"] = float(d.get("score", 0.0))
+                result["sentiment_volume"] = float(d.get("sample_count", 0.0))
                 result["_source"] = "redis"
                 return result
         except Exception:

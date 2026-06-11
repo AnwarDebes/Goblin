@@ -214,9 +214,13 @@ async def health():
     }
 
 
-@app.get("/features/{symbol}")
+@app.get("/features/{symbol:path}")
 async def get_features(symbol: str):
-    """Return latest feature vector for a specific symbol."""
+    """Return latest feature vector for a specific symbol.
+
+    Accepts both underscore (BTC_USDT) and slash (BTC/USDT) forms."""
+    if not symbol:
+        return {"error": "symbol required"}
     symbol = symbol.replace("_", "/").upper()
 
     # Try in-memory cache first

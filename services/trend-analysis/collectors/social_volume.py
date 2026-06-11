@@ -14,8 +14,10 @@ logger = structlog.get_logger()
 class SocialVolumeCollector:
     """Aggregates mention counts from sentiment service Redis data."""
 
-    def __init__(self, redis_client: aioredis.Redis):
+    def __init__(self, redis_client: aioredis.Redis, pairs: Optional[list] = None):
         self._redis = redis_client
+        # Track only the tradable universe when given.
+        self._pairs = set(pairs) if pairs else None
         # Rolling window of mention counts per symbol for z-score calculation
         self._history: Dict[str, list] = {}
         self._history_max = 168  # 7 days of hourly data points
@@ -40,6 +42,9 @@ class SocialVolumeCollector:
                     count = parsed.get("sample_count", 0)
                     if symbol:
                         mention_counts[symbol] = count
+
+            if self._pairs is not None:
+                mention_counts = {s: c for s, c in mention_counts.items() if s in self._pairs}
 
             for symbol, current_count in mention_counts.items():
                 # Update rolling history
