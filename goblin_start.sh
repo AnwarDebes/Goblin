@@ -353,7 +353,9 @@ echo "    --- Continuous Learner (GPU Training) ---"
 rm -f "$MODELS/.cl_singleton.lock"
 printf "    Starting %-22s background ..." "continuous-learner"
 cd "$ROOT/services/continuous-learner"
-python3 main.py > "$LOGS/continuous-learner.log" 2>&1 &
+# expandable_segments avoids CUDA OOM from fragmentation when tcn_long
+# allocates ~9.5GB while older reserved blocks are still held
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python3 main.py > "$LOGS/continuous-learner.log" 2>&1 &
 echo $! > "$LOGS/continuous-learner.pid"
 cd - > /dev/null
 CL_PID=$(cat "$LOGS/continuous-learner.pid")
