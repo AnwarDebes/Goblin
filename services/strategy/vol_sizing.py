@@ -27,6 +27,7 @@ Research backing:
 from dataclasses import dataclass
 from typing import Dict, Optional
 import math
+import os
 
 try:
     from regime import RegimeState
@@ -60,17 +61,19 @@ class SizingResult:
 BASE_RISK_PCT = 0.020            # v14: 2.0% risk per trade — user wants bigger positions
 N_ATR_RISK = 1.5                 # risk = N * ATR (1.5 ATR = tighter risk targeting)
 
-# Dynamic position cap range (replaces fixed 8%)
+# Dynamic position cap range (replaces fixed 8%). Ceiling and base follow
+# MAX_POSITION_PCT so the operator's env cap is authoritative; defaults
+# preserve the old 15% base / 25% ceiling when the env var is unset
 MIN_POSITION_CAP_PCT = 0.08     # v14: Floor raised from 3% to 8%
-MAX_POSITION_CAP_PCT = 0.25     # v14: Ceiling raised from 15% to 25%
-BASE_POSITION_CAP_PCT = 0.15    # v14: Starting point raised from 10% to 15%
+MAX_POSITION_CAP_PCT = float(os.getenv("MAX_POSITION_PCT", "0.25"))
+BASE_POSITION_CAP_PCT = min(float(os.getenv("MAX_POSITION_PCT", "0.15")), MAX_POSITION_CAP_PCT)
 
 # CPPI cushion parameters
 CPPI_FLOOR_PCT = 0.80           # Protect 80% of starting capital (floor)
 CPPI_MULTIPLIER = 5.0           # Exposure = 5x the cushion above floor
 
 # Portfolio heat
-MIN_POSITION_USD = 5.0           # Exchange minimum
+MIN_POSITION_USD = float(os.getenv("MIN_POSITION_USD", "5.0"))  # Exchange minimum
 MAX_PORTFOLIO_HEAT_PCT = 0.30    # Max 30% of portfolio at risk simultaneously
 
 # Regime adjustments
