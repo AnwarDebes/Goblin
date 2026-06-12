@@ -776,14 +776,24 @@ def micro_train_tcn(trade_buffer: TradeFeatureBuffer, model_path: str) -> Option
     # Ensure float32 before saving (AMP autocast may leave BatchNorm buffers in float16)
     model.float()
 
-    # Save updated model
+    # Save updated model via write-verify-rename: this overwrites the served
+    # checkpoint, and the home filesystem can silently truncate writes
+    tmp_path = str(model_path) + ".tmp"
     torch.save({
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "n_features": 20,
         "hidden_channels": TCN_HIDDEN_CHANNELS,
         "n_classes": 3,
-    }, model_path)
+    }, tmp_path)
+    try:
+        torch.load(tmp_path, map_location="cpu", weights_only=True)
+        os.replace(tmp_path, model_path)
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        logger.error("Micro-train checkpoint corrupt on disk, keeping served model", error=str(e))
+        return {"error": "save verification failed"}
 
     avg_loss = total_loss / MICRO_TRAIN_EPOCHS
     logger.info("TCN micro-training complete", buffer_size=len(trade_buffer),
@@ -1042,6 +1052,16 @@ def train_tcn_rl(
     # at least as well as the current weights on the same data (0.02 tolerance
     # for eval noise). Refused candidates are discarded.
     promoted = candidate_path.exists() and (baseline_acc is None or best_acc >= baseline_acc - 0.02)
+    # The home filesystem can silently truncate writes: never promote a
+    # checkpoint that does not load back from disk
+    if promoted:
+        try:
+            torch.load(candidate_path, map_location="cpu", weights_only=True)
+        except Exception as e:
+            logger.error("Candidate checkpoint corrupt on disk, served model keeps its slot",
+                         variant=variant_name, error=str(e))
+            candidate_path.unlink(missing_ok=True)
+            promoted = False
     if promoted:
         import shutil
         latest_path = output_path / f"{variant_name}_latest.pt"
@@ -1228,8 +1248,19 @@ def train_xgboost_rl(
     # at least as well as it does on the same test split
     promoted = baseline_acc is None or accuracy >= baseline_acc - 0.02
     if promoted:
+        # Write-verify-rename: the home filesystem can silently truncate
+        # writes, and a corrupt xgboost_latest.json would break serving
         model_path = output_path / "xgboost_latest.json"
-        model.save_model(str(model_path))
+        tmp_path = output_path / "xgboost_latest.json.tmp"
+        model.save_model(str(tmp_path))
+        try:
+            xgb.Booster(model_file=str(tmp_path))
+            os.replace(tmp_path, model_path)
+        except Exception as e:
+            tmp_path.unlink(missing_ok=True)
+            logger.error("XGBoost save corrupt on disk, served model keeps its slot", error=str(e))
+            promoted = False
+    if promoted:
 
         # Versioned copy for rollback
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
