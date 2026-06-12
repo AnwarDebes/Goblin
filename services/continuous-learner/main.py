@@ -930,6 +930,29 @@ def train_tcn_rl(
     use_amp = USE_AMP and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
+    # Promotion baseline: score the currently-served weights on this run's test
+    # split, so a fine-tune that degrades the live model never replaces it
+    baseline_acc = None
+    if _loaded_state is not None:
+        model.eval()
+        b_correct, b_total = 0, 0
+        with torch.no_grad():
+            for xb_test, yb_test in test_loader:
+                xb_test = xb_test.to(device, non_blocking=True)
+                yb_test = yb_test.to(device, non_blocking=True)
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    b_logits = model(xb_test)
+                b_correct += (b_logits.argmax(dim=1) == yb_test).sum().item()
+                b_total += len(yb_test)
+        baseline_acc = b_correct / max(b_total, 1)
+        logger.info("TCN promotion baseline", variant=variant_name,
+                    baseline_accuracy=round(baseline_acc, 4))
+
+    # Clear any candidate left behind by a crashed run
+    candidate_path = output_path / f"{variant_name}_candidate.pt"
+    if candidate_path.exists():
+        os.remove(candidate_path)
+
     for epoch in range(epochs):
         model.train()
         total_loss = 0.0
@@ -999,33 +1022,9 @@ def train_tcn_rl(
                 "accuracy": best_acc,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
-            # Save as variant-specific latest file
-            latest_filename = f"{variant_name}_latest.pt"
-            torch.save(save_dict, output_path / latest_filename)
-
-            # Model versioning: save timestamped copy
-            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            versioned_filename = f"{variant_name}_{ts}.pt"
-            torch.save(save_dict, output_path / versioned_filename)
-
-            # Keep only last 3 versioned copies per variant
-            import glob as _glob
-            version_pattern = str(output_path / f"{variant_name}_20*.pt")
-            versioned_files = sorted(_glob.glob(version_pattern))
-            while len(versioned_files) > 3:
-                os.remove(versioned_files.pop(0))
-
-            # Save best model copy when new best accuracy is achieved
-            best_path = output_path / f"{variant_name}_best.pt"
-            existing_best_acc = 0.0
-            if best_path.exists():
-                try:
-                    old_best = torch.load(best_path, map_location="cpu", weights_only=True)
-                    existing_best_acc = old_best.get("accuracy", 0.0)
-                except Exception:
-                    pass
-            if best_acc > existing_best_acc:
-                torch.save(save_dict, best_path)
+            # Save as candidate only; promotion to _latest is gated after
+            # training against the served model's score on the same test set
+            torch.save(save_dict, candidate_path)
 
     # Directional accuracy (ignore neutral class=2)
     model.float()  # Ensure float32 for final evaluation
@@ -1039,7 +1038,43 @@ def train_tcn_rl(
         dir_mask = y_test_dev != 2
         dir_acc = (preds[dir_mask] == y_test_dev[dir_mask]).float().mean().item() if dir_mask.sum() > 0 else 0.0
 
+    # Promotion gate: replace the served model only when the fine-tune scores
+    # at least as well as the current weights on the same data (0.02 tolerance
+    # for eval noise). Refused candidates are discarded.
+    promoted = candidate_path.exists() and (baseline_acc is None or best_acc >= baseline_acc - 0.02)
+    if promoted:
+        import shutil
+        latest_path = output_path / f"{variant_name}_latest.pt"
+        os.replace(candidate_path, latest_path)
+
+        # Model versioning: save timestamped copy, keep only last 3 per variant
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        shutil.copyfile(latest_path, output_path / f"{variant_name}_{ts}.pt")
+        import glob as _glob
+        versioned_files = sorted(_glob.glob(str(output_path / f"{variant_name}_20*.pt")))
+        while len(versioned_files) > 3:
+            os.remove(versioned_files.pop(0))
+
+        # Save best model copy when new best accuracy is achieved
+        best_path = output_path / f"{variant_name}_best.pt"
+        existing_best_acc = 0.0
+        if best_path.exists():
+            try:
+                old_best = torch.load(best_path, map_location="cpu", weights_only=True)
+                existing_best_acc = old_best.get("accuracy", 0.0)
+            except Exception:
+                pass
+        if best_acc > existing_best_acc:
+            shutil.copyfile(latest_path, best_path)
+    else:
+        if candidate_path.exists():
+            os.remove(candidate_path)
+        logger.warning("TCN promotion refused, served model keeps its slot",
+                       variant=variant_name, new_accuracy=round(best_acc, 4),
+                       baseline_accuracy=round(baseline_acc, 4) if baseline_acc is not None else None)
+
     metadata = {
+        "promoted": promoted,
         "model_type": "tcn",
         "variant": variant_name,
         "trained_at": datetime.now(timezone.utc).isoformat(),
@@ -1059,11 +1094,14 @@ def train_tcn_rl(
         "lr_scheduler": "CosineAnnealingWarmRestarts",
     }
 
-    with open(output_path / f"{variant_name}_metadata.json", "w") as f:
-        json.dump(metadata, f, indent=2)
+    # On-disk metadata always describes the model actually being served
+    if promoted:
+        with open(output_path / f"{variant_name}_metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
 
     logger.info("TCN RL training complete", variant=variant_name, accuracy=best_acc,
-                dir_accuracy=dir_acc, rl_weighted=reward_weights is not None)
+                dir_accuracy=dir_acc, promoted=promoted,
+                rl_weighted=reward_weights is not None)
 
     # Free GPU memory after training — prevents OOM when multiple variants train sequentially
     # and ensures the prediction service can use GPU for inference between cycles
@@ -1147,6 +1185,17 @@ def train_xgboost_rl(
             logger.warning("XGBoost: could not load existing, training fresh", error=str(e))
             existing_booster = None
 
+    # Promotion baseline: score the currently-served booster on this run's
+    # test split before training continues from it
+    baseline_acc = None
+    if existing_booster is not None:
+        try:
+            base_preds = np.argmax(existing_booster.predict(dtest), axis=1)
+            baseline_acc = float(np.mean(base_preds == y_test))
+            logger.info("XGBoost promotion baseline", baseline_accuracy=round(baseline_acc, 4))
+        except Exception as e:
+            logger.warning("XGBoost baseline eval failed", error=str(e))
+
     model = xgb.train(
         params,
         dtrain,
@@ -1173,36 +1222,44 @@ def train_xgboost_rl(
     else:
         dir_acc = 0.0
 
-    # Save latest + versioned copy
-    model_path = output_path / "xgboost_latest.json"
-    model.save_model(str(model_path))
+    # Promotion gate: replace the served booster only when the update scores
+    # at least as well as it does on the same test split
+    promoted = baseline_acc is None or accuracy >= baseline_acc - 0.02
+    if promoted:
+        model_path = output_path / "xgboost_latest.json"
+        model.save_model(str(model_path))
 
-    # Versioned copy for rollback
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    versioned_path = output_path / f"xgboost_{ts}.json"
-    model.save_model(str(versioned_path))
+        # Versioned copy for rollback
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        versioned_path = output_path / f"xgboost_{ts}.json"
+        model.save_model(str(versioned_path))
 
-    # Keep only last 3 versioned copies (XGBoost models are large)
-    import glob as _glob
-    xgb_versions = sorted(_glob.glob(str(output_path / "xgboost_20*.json")))
-    while len(xgb_versions) > 3:
-        os.remove(xgb_versions.pop(0))
+        # Keep only last 3 versioned copies (XGBoost models are large)
+        import glob as _glob
+        xgb_versions = sorted(_glob.glob(str(output_path / "xgboost_20*.json")))
+        while len(xgb_versions) > 3:
+            os.remove(xgb_versions.pop(0))
 
-    # Update best model if accuracy improved
-    best_path = output_path / "xgboost_best.json"
-    existing_best_acc = 0.0
-    meta_path = output_path / "xgboost_metadata.json"
-    if meta_path.exists():
-        try:
-            with open(meta_path) as f:
-                existing_best_acc = json.load(f).get("accuracy", 0.0)
-        except Exception:
-            pass
-    if accuracy > existing_best_acc or not best_path.exists():
-        model.save_model(str(best_path))
-        logger.info("New best XGBoost model", accuracy=accuracy)
+        # Update best model if accuracy improved
+        best_path = output_path / "xgboost_best.json"
+        existing_best_acc = 0.0
+        meta_path = output_path / "xgboost_metadata.json"
+        if meta_path.exists():
+            try:
+                with open(meta_path) as f:
+                    existing_best_acc = json.load(f).get("accuracy", 0.0)
+            except Exception:
+                pass
+        if accuracy > existing_best_acc or not best_path.exists():
+            model.save_model(str(best_path))
+            logger.info("New best XGBoost model", accuracy=accuracy)
+    else:
+        logger.warning("XGBoost promotion refused, served model keeps its slot",
+                       new_accuracy=round(accuracy, 4),
+                       baseline_accuracy=round(baseline_acc, 4) if baseline_acc is not None else None)
 
     metadata = {
+        "promoted": promoted,
         "model_type": "xgboost",
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "samples_train": int(len(X_train)),
@@ -1217,11 +1274,13 @@ def train_xgboost_rl(
         "learning_type": "reinforcement_online",
     }
 
-    with open(output_path / "xgboost_metadata.json", "w") as f:
-        json.dump(metadata, f, indent=2)
+    # On-disk metadata always describes the model actually being served
+    if promoted:
+        with open(output_path / "xgboost_metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
 
     logger.info("XGBoost RL training complete", accuracy=accuracy, dir_accuracy=dir_acc,
-                incremental=existing_booster is not None)
+                promoted=promoted, incremental=existing_booster is not None)
     return metadata
 
 
@@ -1238,6 +1297,12 @@ def update_registry(models_dir: Path, tcn_meta: dict, xgb_meta: dict):
             entries = []
 
     now = datetime.now(timezone.utc).isoformat()
+
+    # Models refused by the promotion gate are not serving and must not be registered
+    if tcn_meta.get("promoted") is False:
+        tcn_meta = {}
+    if xgb_meta.get("promoted") is False:
+        xgb_meta = {}
 
     if tcn_meta.get("accuracy"):
         entries.append({
