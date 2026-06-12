@@ -13,10 +13,6 @@ healthy() {
     curl -sf -o /dev/null --max-time 2 http://localhost:8080/health 2>/dev/null
 }
 
-# Re-arm the boot hook: if a new code-server version was downloaded (fresh
-# unpatched tarball in cache), patch it so the NEXT boot autostarts again.
-(bash "$ROOT/scripts/wrap_code_server_cache.sh" >> "$ROOT/logs/autostart.log" 2>&1 &)
-
 # Fast path: already running, nothing to do.
 healthy && exit 0
 
@@ -24,6 +20,11 @@ healthy && exit 0
 mkdir "$LOCK" 2>/dev/null || exit 0
 
 (
+    # Re-arm the boot hook (inside the lock so it can never run twice
+    # concurrently): if a new code-server version was downloaded, patch
+    # the fresh tarball so the NEXT boot autostarts again.
+    bash "$ROOT/scripts/wrap_code_server_cache.sh"
+
     echo "[$(date '+%F %T')] api-gateway down - launching goblin_start.sh --resume"
     bash "$ROOT/goblin_start.sh" --resume >> "$LOG" 2>&1 || \
         echo "[$(date '+%F %T')] resume FAILED - check $LOG"
