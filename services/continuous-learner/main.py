@@ -787,6 +787,7 @@ def micro_train_tcn(trade_buffer: TradeFeatureBuffer, model_path: str) -> Option
         "n_classes": 3,
     }, tmp_path)
     try:
+        _fsync_path(tmp_path)
         torch.load(tmp_path, map_location="cpu", weights_only=True)
         os.replace(tmp_path, model_path)
     except Exception as e:
@@ -799,6 +800,30 @@ def micro_train_tcn(trade_buffer: TradeFeatureBuffer, model_path: str) -> Option
     logger.info("TCN micro-training complete", buffer_size=len(trade_buffer),
                 sequences=len(X_seqs), avg_loss=round(avg_loss, 4))
     return {"micro_train": True, "loss": round(avg_loss, 4), "samples": len(X_seqs)}
+
+
+def _fsync_path(path):
+    """Force a file's data out to storage. The home filesystem has truncated
+    files that were only verified through the page cache."""
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _checkpoint_candidates(latest_path):
+    """Load order when the served checkpoint may be corrupt: _latest first,
+    then the newest versioned copies, then _best. Never train from scratch
+    while any valid copy of the model exists."""
+    import glob as _glob
+    latest = str(latest_path)
+    ext = ".pt" if latest.endswith(".pt") else ".json"
+    stem = latest.replace(f"_latest{ext}", "")
+    paths = [latest]
+    paths += sorted(_glob.glob(f"{stem}_20*{ext}"), reverse=True)
+    paths.append(f"{stem}_best{ext}")
+    return [p for p in paths if os.path.isfile(p)]
 
 
 # ── Model Training Functions ──────────────────────────────────────────
@@ -845,26 +870,35 @@ def train_tcn_rl(
         dropout=0.2,
     ).to(device)
 
-    # Load existing weights if available (online learning)
+    # Load existing weights if available (online learning); if the served
+    # checkpoint is corrupt, fall back to versioned/best copies
     _loaded_state = None
-    if existing_model_path and os.path.isfile(existing_model_path):
-        try:
-            state = torch.load(existing_model_path, map_location=device, weights_only=True)
-            # If checkpoint has different hidden_channels, rebuild the network
-            ckpt_hc = state.get("hidden_channels", hidden_channels)
-            if ckpt_hc != hidden_channels:
-                logger.info("TCN: checkpoint hidden_channels mismatch, training from scratch",
-                            checkpoint=ckpt_hc, configured=hidden_channels)
-            else:
+    if existing_model_path:
+        for candidate in _checkpoint_candidates(existing_model_path):
+            try:
+                state = torch.load(candidate, map_location=device, weights_only=True)
+                # If checkpoint has different hidden_channels, rebuild the network
+                ckpt_hc = state.get("hidden_channels", hidden_channels)
+                if ckpt_hc != hidden_channels:
+                    logger.info("TCN: checkpoint hidden_channels mismatch, training from scratch",
+                                checkpoint=ckpt_hc, configured=hidden_channels)
+                    break
                 if "model_state_dict" in state:
                     model.load_state_dict(state["model_state_dict"])
                 else:
                     model.load_state_dict(state)
                 model.float()  # Ensure float32 after loading (AMP may save half-precision)
                 _loaded_state = state
+                if candidate != str(existing_model_path):
+                    logger.warning("TCN: served checkpoint corrupt, recovered from fallback",
+                                   fallback=os.path.basename(candidate))
                 logger.info("TCN: loaded existing model for fine-tuning")
-        except Exception as e:
-            logger.warning("TCN: could not load existing model, training from scratch", error=str(e))
+                break
+            except Exception as e:
+                logger.warning("TCN: checkpoint failed to load, trying next",
+                               path=os.path.basename(candidate), error=str(e))
+        if _loaded_state is None:
+            logger.error("TCN: no checkpoint restored, training from scratch")
 
     # Prepare data (seq_length comes from function parameter)
     X_seqs, y_seqs, w_seqs = [], [], []
@@ -1056,6 +1090,7 @@ def train_tcn_rl(
     # checkpoint that does not load back from disk
     if promoted:
         try:
+            _fsync_path(candidate_path)
             torch.load(candidate_path, map_location="cpu", weights_only=True)
         except Exception as e:
             logger.error("Candidate checkpoint corrupt on disk, served model keeps its slot",
@@ -1196,19 +1231,28 @@ def train_xgboost_rl(
         "colsample_bytree": 0.8,
     }
 
-    # Incremental learning: continue from existing model
+    # Incremental learning: continue from existing model; if the served file
+    # is corrupt (filesystem truncation), fall back to versioned/best copies
     existing_booster = None
-    if existing_model_path and os.path.isfile(existing_model_path):
-        try:
-            existing_booster = xgb.Booster()
-            existing_booster.load_model(existing_model_path)
-            # The saved booster remembers its own device; without this,
-            # incremental training silently stays on cpu
-            existing_booster.set_param({"device": params["device"]})
-            logger.info("XGBoost: loaded existing model for incremental training")
-        except Exception as e:
-            logger.warning("XGBoost: could not load existing, training fresh", error=str(e))
-            existing_booster = None
+    if existing_model_path:
+        for candidate in _checkpoint_candidates(existing_model_path):
+            try:
+                existing_booster = xgb.Booster()
+                existing_booster.load_model(candidate)
+                # The saved booster remembers its own device; without this,
+                # incremental training silently stays on cpu
+                existing_booster.set_param({"device": params["device"]})
+                if candidate != str(existing_model_path):
+                    logger.warning("XGBoost: served model corrupt, recovered from fallback",
+                                   fallback=os.path.basename(candidate))
+                logger.info("XGBoost: loaded existing model for incremental training")
+                break
+            except Exception as e:
+                logger.warning("XGBoost: checkpoint failed to load, trying next",
+                               path=os.path.basename(candidate), error=str(e))
+                existing_booster = None
+        if existing_booster is None:
+            logger.error("XGBoost: NO valid checkpoint found, training fresh")
 
     # Promotion baseline: score the currently-served booster on this run's
     # test split before training continues from it
@@ -1257,6 +1301,7 @@ def train_xgboost_rl(
         tmp_path = output_path / "xgboost_latest.json.tmp"
         model.save_model(str(tmp_path))
         try:
+            _fsync_path(tmp_path)
             xgb.Booster(model_file=str(tmp_path))
             os.replace(tmp_path, model_path)
         except Exception as e:
