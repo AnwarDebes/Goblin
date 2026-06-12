@@ -377,9 +377,16 @@ async def execute_live_order(request: OrderRequest) -> OrderResponse:
                         await exchange.cancel_order(order.get("id"), request.symbol)
                     except Exception:
                         pass
-                market_order = await exchange.create_market_order(
-                    request.symbol, request.side, request.amount,
-                    price=current_price if request.side == "buy" else None)
+                if request.side == "buy":
+                    # request.amount is base quantity, but with
+                    # createMarketBuyOrderRequiresPrice=False ccxt sends the
+                    # amount of a market buy as QUOTE cost - convert via the
+                    # explicit cost variant or the order is mis-sized
+                    market_order = await exchange.create_market_buy_order_with_cost(
+                        request.symbol, request.amount * current_price)
+                else:
+                    market_order = await exchange.create_market_sell_order(
+                        request.symbol, request.amount)
                 order_status = market_order.get("status", "closed")
                 filled_amount = market_order.get("filled") if market_order.get("filled") is not None else request.amount
                 order_price = market_order.get("price") or market_order.get("average") or current_price or 0
