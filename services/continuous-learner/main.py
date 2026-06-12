@@ -1202,6 +1202,9 @@ def train_xgboost_rl(
         try:
             existing_booster = xgb.Booster()
             existing_booster.load_model(existing_model_path)
+            # The saved booster remembers its own device; without this,
+            # incremental training silently stays on cpu
+            existing_booster.set_param({"device": params["device"]})
             logger.info("XGBoost: loaded existing model for incremental training")
         except Exception as e:
             logger.warning("XGBoost: could not load existing, training fresh", error=str(e))
