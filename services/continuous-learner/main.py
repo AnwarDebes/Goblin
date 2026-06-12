@@ -1169,7 +1169,9 @@ def train_xgboost_rl(
         "max_depth": XGB_MAX_DEPTH,
         "learning_rate": lr,
         "tree_method": "hist",
-        "device": "cpu",  # Use CPU — GPU memory reserved by TCN variants
+        # GPU by default: TCN no longer hoards VRAM (expandable_segments),
+        # and gpu hist cuts a ~60min CPU pass down to minutes on the V100
+        "device": os.getenv("XGB_DEVICE", "cuda"),
         "subsample": 0.8,
         "colsample_bytree": 0.8,
     }
