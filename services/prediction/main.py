@@ -180,16 +180,34 @@ def load_models() -> None:
         if os.path.isfile(direct_path):
             xgb_path = str(direct_path)
             logger.info("XGBoost found via direct file (no registry entry)")
+    # Build an ordered candidate list: registry/latest first, then newest
+    # versioned copies, then best. The shared filesystem intermittently
+    # truncates the large xgboost_latest.json; without this fallback a single
+    # corrupt latest drops XGBoost from the ensemble entirely (TCN-only).
+    import glob as _glob
+    xgb_candidates = []
     if xgb_path:
+        xgb_candidates.append(xgb_path)
+    xgb_candidates += sorted(_glob.glob(str(MODEL_DIR / "xgboost_20*.json")), reverse=True)
+    xgb_candidates.append(str(MODEL_DIR / "xgboost_best.json"))
+    xgb_model = None
+    for cand in xgb_candidates:
+        if not os.path.isfile(cand):
+            continue
         try:
-            xgb_model = XGBoostModel()
-            xgb_model.load(xgb_path)
-            logger.info("XGBoost model loaded", path=xgb_path)
+            m = XGBoostModel()
+            m.load(cand)
+            xgb_model = m
+            if cand != xgb_path:
+                logger.warning("XGBoost latest unreadable, served from fallback",
+                               fallback=os.path.basename(cand))
+            logger.info("XGBoost model loaded", path=cand)
+            break
         except Exception as exc:
-            logger.warning("Failed to load XGBoost model", error=str(exc))
-            xgb_model = None
-    else:
-        logger.info("No XGBoost model found, ML-XGB will be unavailable")
+            logger.warning("XGBoost candidate failed to load, trying next",
+                           path=os.path.basename(cand), error=str(exc))
+    if xgb_model is None:
+        logger.error("No valid XGBoost model found, ML-XGB unavailable (TCN-only)")
 
 
 # ---------------------------------------------------------------------------

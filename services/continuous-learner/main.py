@@ -84,6 +84,10 @@ LEARNING_RATE_TCN = 0.001   # v5: higher initial LR for fast adaptation (was 0.0
 LEARNING_RATE_XGB = 0.03
 TCN_EPOCHS_PER_CYCLE = int(os.getenv("TCN_EPOCHS_PER_CYCLE", "20"))   # v6: 20 — fast cycles, deploy models quickly
 XGB_BOOST_ROUNDS_PER_CYCLE = int(os.getenv("XGB_BOOST_ROUNDS_PER_CYCLE", "500"))  # v5: 500 (was 300)
+# Cap total accumulated trees: incremental training appends ~ROUNDS_PER_CYCLE
+# trees each cycle and the file grew to ~1.7GB (then the shared FS truncated it).
+# Past the cap, retrain fresh to reset size, corruption risk, and memorisation.
+XGB_MAX_TOTAL_TREES = int(os.getenv("XGB_MAX_TOTAL_TREES", "1500"))
 TCN_HIDDEN_CHANNELS = int(os.getenv("TCN_HIDDEN_CHANNELS", "512"))  # v6: wider model for V100
 TCN_BATCH_SIZE = int(os.getenv("TCN_BATCH_SIZE", "8192"))  # v6: 8192 — larger batches = higher GPU utilization on V100 32GB
 GRADIENT_ACCUMULATION_STEPS = int(os.getenv("GRADIENT_ACCUMULATION_STEPS", "1"))  # v6: no accumulation — full GPU batches
@@ -1307,6 +1311,19 @@ def train_xgboost_rl(
                 if candidate != str(existing_model_path):
                     logger.warning("XGBoost: served model corrupt, recovered from fallback",
                                    fallback=os.path.basename(candidate))
+                # Bound model growth: incremental training APPENDS ~n_rounds trees
+                # every cycle, so the file grows without limit (reached ~1.7GB,
+                # which the shared FS then truncates). Past the cap, retrain fresh
+                # so size/corruption/over-memorisation all reset.
+                try:
+                    n_trees = existing_booster.num_boosted_rounds()
+                    if n_trees >= XGB_MAX_TOTAL_TREES:
+                        logger.warning("XGBoost: tree cap reached, retraining fresh",
+                                       trees=n_trees, cap=XGB_MAX_TOTAL_TREES)
+                        existing_booster = None
+                        break
+                except Exception:
+                    pass
                 logger.info("XGBoost: loaded existing model for incremental training")
                 break
             except Exception as e:
