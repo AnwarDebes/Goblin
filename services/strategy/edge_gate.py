@@ -19,6 +19,7 @@ The gate produces an EdgeDecision with:
   size_mult: float  — recommended size multiplier (0-1)
   reasons: list     — why the gate decided this way
 """
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List
 
@@ -41,8 +42,8 @@ class EdgeDecision:
 
 # ── Configuration ─────────────────────────────────────────────────────
 
-EDGE_THRESHOLD = 0.65          # 2026-06-09: raised from 0.40 - 12h run showed gross expectancy below the 0.1% round-trip fee; only the top conviction tail can clear it
-MIN_CONFIDENCE = 0.70          # 2026-06-09: raised from 0.25 - backstop just under the signal layer's 0.75
+EDGE_THRESHOLD = float(os.getenv("EDGE_THRESHOLD", 0.55))   # 2026-06-13: 0.65->0.55, calibrated to the models' real edge_score range (composite capped ~0.66); 0.65 was unreachable -> zero trades for 2 days
+MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", 0.55))   # 2026-06-13: 0.70->0.55, model confidence ceiling is ~0.66; 0.70 backstop blocked everything
 AGREEMENT_BONUS = 0.15         # bonus when TCN + XGBoost agree
 
 # Spread filter: tightened for normal entries, relaxed for fast movers
@@ -94,12 +95,15 @@ FEAR_GREED_EDGE_BONUS = {
 # F&G-aware minimum confidence thresholds (overrides MIN_CONFIDENCE per zone)
 # 2026-05-24: rescaled in lockstep with MIN_CONFIDENCE raise from 0.10 to 0.25
 # 2026-06-09: rescaled in lockstep with MIN_CONFIDENCE raise from 0.25 to 0.70
+# 2026-06-13: rescaled down in lockstep with MIN_CONFIDENCE 0.70->0.55 (models
+# cap ~0.66; the old 0.68-0.77 band was unreachable -> zero trades). Relative
+# shape kept: harder to enter in greed, easier (contrarian) in fear.
 FEAR_GREED_MIN_CONFIDENCE = {
-    "extreme_fear":  0.68,   # Slightly lower bar - contrarian buys allowed
-    "fear":          0.69,
-    "neutral":       0.70,
-    "greed":         0.73,
-    "extreme_greed": 0.77,
+    "extreme_fear":  0.55,   # Slightly lower bar - contrarian buys allowed
+    "fear":          0.56,
+    "neutral":       0.57,
+    "greed":         0.60,
+    "extreme_greed": 0.63,
 }
 
 # v13: Reduced max concurrent positions — too many correlated altcoin positions
