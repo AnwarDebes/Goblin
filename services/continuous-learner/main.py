@@ -1131,17 +1131,24 @@ def train_tcn_rl(
             # training against the served model's score on the same test set
             torch.save(save_dict, candidate_path)
 
-    # Directional accuracy (ignore neutral class=2)
+    # Directional accuracy (ignore neutral class=2). Evaluate in BATCHES via the
+    # loader — a single forward pass over the whole test set moves it all to GPU
+    # at once and OOMs as the dataset grows (tcn_long at 48 pairs needs ~26GB).
     model.float()  # Ensure float32 for final evaluation
     model.eval()
+    dir_correct = 0
+    dir_total = 0
     with torch.no_grad():
-        X_test_dev = X_test.to(device)
-        y_test_dev = y_test.to(device)
-        with torch.amp.autocast("cuda", enabled=use_amp):
-            test_logits = model(X_test_dev)
-        preds = test_logits.argmax(dim=1)
-        dir_mask = y_test_dev != 2
-        dir_acc = (preds[dir_mask] == y_test_dev[dir_mask]).float().mean().item() if dir_mask.sum() > 0 else 0.0
+        for xb_test, yb_test in test_loader:
+            xb_test = xb_test.to(device, non_blocking=True)
+            yb_test = yb_test.to(device, non_blocking=True)
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                logits = model(xb_test)
+            preds = logits.argmax(dim=1)
+            mask = yb_test != 2
+            dir_total += int(mask.sum().item())
+            dir_correct += int((preds[mask] == yb_test[mask]).sum().item())
+    dir_acc = (dir_correct / dir_total) if dir_total > 0 else 0.0
 
     # Promotion gate: replace the served model only when the fine-tune scores
     # at least as well as the current weights on the same data (0.02 tolerance
@@ -1312,6 +1319,7 @@ def train_xgboost_rl(
     # Incremental learning: continue from existing model; if the served file
     # is corrupt (filesystem truncation), fall back to versioned/best copies
     existing_booster = None
+    tree_cap_reset = False
     if existing_model_path:
         for candidate in _checkpoint_candidates(existing_model_path):
             try:
@@ -1333,6 +1341,7 @@ def train_xgboost_rl(
                         logger.warning("XGBoost: tree cap reached, retraining fresh",
                                        trees=n_trees, cap=XGB_MAX_TOTAL_TREES)
                         existing_booster = None
+                        tree_cap_reset = True
                         break
                 except Exception:
                     pass
@@ -1342,7 +1351,7 @@ def train_xgboost_rl(
                 logger.warning("XGBoost: checkpoint failed to load, trying next",
                                path=os.path.basename(candidate), error=str(e))
                 existing_booster = None
-        if existing_booster is None:
+        if existing_booster is None and not tree_cap_reset:
             logger.error("XGBoost: NO valid checkpoint found, training fresh")
 
     # Promotion baseline: score the currently-served booster on this run's
