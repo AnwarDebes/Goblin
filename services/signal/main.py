@@ -356,7 +356,13 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
         action = "sell"
         signal_side = "long"
     elif normalized_direction == "sell" and not has_position:
-        # SHORT ENTRY: bearish prediction with no open position
+        # SHORT ENTRY: bearish prediction with no open position. MEXC SPOT IS
+        # LONG-ONLY — the executor rejects shorts, but an approved short still
+        # trips the 30-min spacing brake and blocks real buys. Skip unless
+        # explicitly enabled (would require MEXC futures/swap).
+        if os.getenv("ALLOW_SHORTS", "false").lower() != "true":
+            SIGNALS_SKIPPED.labels(reason="shorts_disabled_spot").inc()
+            return None
         action = "short_entry"
         signal_side = "short"
     elif normalized_direction == "buy" and has_position and current_side == "short":

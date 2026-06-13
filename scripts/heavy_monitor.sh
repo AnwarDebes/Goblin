@@ -28,10 +28,12 @@ while true; do
     curl -s --max-time 5 http://localhost:8005/health 2>/dev/null | grep -q '"mode": *"live"' || P="$P executor-not-live"
     # 4. continuous learner alive
     kill -0 "$(cat logs/continuous-learner.pid 2>/dev/null)" 2>/dev/null || P="$P CL-dead"
-    # 5. CL training progressing (RL-complete count should rise; stall = stuck)
-    CLN=$(grep -c "RL training complete" logs/continuous-learner.log 2>/dev/null); CLN=${CLN:-0}
-    if [ "$CLN" = "$STALL_REF" ]; then STALL_COUNT=$((STALL_COUNT+1)); else STALL_REF=$CLN; STALL_COUNT=0; fi
-    [ "$STALL_COUNT" -ge 8 ] && P="$P CL-training-stalled-16min"   # 8 * 2min
+    # 5. CL actually producing output. A full 48-pair cycle (5 TCN variants +
+    # XGBoost on 1.1M samples) runs ~1h, and the XGBoost phase emits no
+    # "RL training complete", so counting those falsely flags a stall. Instead
+    # check the log was written recently — a truly stuck CL produces nothing.
+    CL_LOG_AGE=$(( ($(date +%s) - $(stat -c %Y logs/continuous-learner.log 2>/dev/null || echo "$(date +%s)")) / 60 ))
+    [ "$CL_LOG_AGE" -gt 45 ] && P="$P CL-no-output-${CL_LOG_AGE}min"
     # 6. candle freshness (1m must be < 6 min old)
     AGE=$(PG "SELECT EXTRACT(EPOCH FROM (NOW()-MAX(time)))/60 FROM candles WHERE timeframe='1m'")
     if [ -n "$AGE" ]; then awk "BEGIN{exit !($AGE>6)}" && P="$P candles-stale-${AGE%.*}min"; fi
@@ -50,11 +52,9 @@ while true; do
     if curl -sf -o /dev/null --max-time 12 "https://goblin-api.goblin-anwar.workers.dev/health" 2>/dev/null; then WORKER_FAILS=0; else
         WORKER_FAILS=$((WORKER_FAILS+1)); [ "$WORKER_FAILS" -ge 2 ] && P="$P frontend-worker-down"; fi
     # 11. checkpoint freshness (a _latest model saved within 30 min => training is persisting)
-    # 60-min threshold: the promotion gate legitimately refuses non-improving
-    # variants for long stretches (so _latest is rightly stale); the training
-    # stall check (#5) is the real CL-health signal.
-    NEWEST=$(ls -t shared/models/*_latest.pt 2>/dev/null | head -1)
-    if [ -n "$NEWEST" ]; then MAGE=$(( ($(date +%s) - $(stat -c %Y "$NEWEST")) / 60 )); [ "$MAGE" -gt 60 ] && P="$P checkpoints-stale-${MAGE}min"; fi
+    # (checkpoint-staleness check removed: the promotion gate refuses non-improving
+    # variants indefinitely against the stale leaky baseline, so _latest can be
+    # legitimately hours old. The CL-output check (#5) is the real health signal.)
 
     # 12. market-data must keep up with all pairs (rate-limit / drop check)
     MDS=$(curl -s --max-time 5 http://localhost:8001/health 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('symbols_total',0))" 2>/dev/null)
