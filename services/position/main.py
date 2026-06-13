@@ -243,12 +243,18 @@ async def handle_filled_order(order: dict):
             pos.realized_pnl += realized
             pos.amount -= filled_amount
 
-            # If position is fully closed
-            if pos.amount <= 0.0001:  # Account for floating point precision
+            # Fully closed, OR only an unsellable dust remainder is left. A
+            # remainder worth less than MEXC's ~$1.40 min order can NEVER be
+            # sold, so without this the position sticks in "closing" forever:
+            # it's never recorded in trade_history (so it vanishes from "recent
+            # trades") and the executor retries the sale endlessly.
+            remaining_value_usd = pos.amount * order_price
+            if pos.amount <= 0.0001 or remaining_value_usd < 1.0:
                 pos.status = "closed"
                 pos.amount = 0
 
-                # Record trade in history
+                # Record trade in history. Use the position's CUMULATIVE realized
+                # PnL so multi-fill / dust-closed trades show their true total.
                 pnl_pct = ((order_price - pos.entry_price) / pos.entry_price) if pos.side == "long" else ((pos.entry_price - order_price) / pos.entry_price)
                 entry_cost_usd = pos.entry_price * filled_amount
                 exit_cost_usd = order_price * filled_amount
@@ -260,8 +266,8 @@ async def handle_filled_order(order: dict):
                     "amount": filled_amount,
                     "entry_cost_usd": round(entry_cost_usd, 4),
                     "exit_cost_usd": round(exit_cost_usd, 4),
-                    "realized_pnl": realized,
-                    "total_pnl": pos.realized_pnl,
+                    "realized_pnl": round(pos.realized_pnl, 6),
+                    "total_pnl": round(pos.realized_pnl, 6),
                     "pnl_pct": pnl_pct,
                     "entry_time": pos.opened_at,
                     "exit_time": datetime.utcnow().isoformat(),
