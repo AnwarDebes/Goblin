@@ -465,6 +465,18 @@ class RewardTracker:
             avg = sum(rews) / len(rews) if rews else 0
             reward_summary[sym] = avg
             await self.redis.hset("rl:reward_avg", sym, str(round(avg, 4)))
+            # Cumulative prequential forward-skill: accumulate correct/wrong over
+            # ALL resolved predictions (the per-cycle reward_avg is overwritten
+            # and too noisy to act on). pq:correct/pq:wrong/pq:resolved give a
+            # stable per-pair 10-min forward hit-rate with a real sample size —
+            # the honest "does this pair beat chance" signal.
+            correct = sum(1 for r in rews if r > 0)
+            wrong = sum(1 for r in rews if r < 0)
+            if correct:
+                await self.redis.hincrbyfloat("pq:correct", sym, correct)
+            if wrong:
+                await self.redis.hincrbyfloat("pq:wrong", sym, wrong)
+            await self.redis.hincrby("pq:resolved", sym, len(rews))
 
         return reward_summary
 
