@@ -828,6 +828,21 @@ def _checkpoint_candidates(latest_path):
 
 # ── Model Training Functions ──────────────────────────────────────────
 
+def _walk_forward_threshold(timestamps, frac: float = 0.8):
+    """Time boundary for a walk-forward split: train on the oldest `frac` of
+    rows, test on the most recent (1-frac). Returns None when timestamps are
+    missing/zero so callers fall back to the legacy positional split.
+
+    This replaces the old positional split on a non-deterministically ordered
+    (as_completed) per-symbol concatenation, which let the incrementally
+    trained model see future/test rows it had memorised in prior cycles —
+    the cause of the implausible ~0.93 XGBoost accuracy that then bled down."""
+    ts = np.asarray(timestamps, dtype=np.float64)
+    if ts.size == 0 or not np.any(ts > 0):
+        return None
+    return float(np.quantile(ts[ts > 0], frac))
+
+
 def train_tcn_rl(
     features: np.ndarray,
     targets: np.ndarray,
@@ -839,6 +854,8 @@ def train_tcn_rl(
     hidden_channels: int = 192,
     seq_length: int = 30,
     variant_name: str = "tcn",
+    sample_timestamps: Optional[np.ndarray] = None,
+    sample_symbol_ids: Optional[np.ndarray] = None,
 ) -> dict:
     """Train/update TCN model with RL reward weighting.
 
@@ -900,30 +917,58 @@ def train_tcn_rl(
         if _loaded_state is None:
             logger.error("TCN: no checkpoint restored, training from scratch")
 
-    # Prepare data (seq_length comes from function parameter)
-    X_seqs, y_seqs, w_seqs = [], [], []
+    # Prepare data. When timestamps + symbol ids are available, build a TRUE
+    # walk-forward split: sequences never cross a symbol boundary (the old loop
+    # slid across the per-symbol concatenation, mixing two coins in one
+    # window), and train/test are separated in time (oldest 80% / newest 20%)
+    # rather than by a positional cut on a non-deterministically ordered array.
+    thr = _walk_forward_threshold(sample_timestamps, 0.8) if sample_timestamps is not None else None
+    use_wf = (
+        thr is not None
+        and sample_symbol_ids is not None
+        and len(sample_timestamps) == len(features) == len(sample_symbol_ids)
+    )
 
-    for i in range(seq_length, len(features)):
-        X_seqs.append(features[i - seq_length:i])
-        y_seqs.append(targets[i])
-        if reward_weights is not None:
-            w_seqs.append(max(reward_weights[i], 0.1))  # Floor at 0.1
-        else:
-            w_seqs.append(1.0)
-
-    if len(X_seqs) < 100:
-        return {"status": "skipped", "reason": "insufficient sequences"}
-
-    # Keep data on CPU, use DataLoader to batch-transfer to GPU (avoids OOM)
-    X = torch.tensor(np.array(X_seqs, dtype=np.float32))
-    y = torch.tensor(np.array(y_seqs, dtype=np.int64))
-    w = torch.tensor(np.array(w_seqs, dtype=np.float32))
-
-    # Walk-forward split: 80/20
-    split = int(len(X) * 0.8)
-    X_train, X_test = X[:split], X[split:]
-    y_train, y_test = y[:split], y[split:]
-    w_train = w[:split]
+    if use_wf:
+        Xtr, ytr, wtr, Xte, yte = [], [], [], [], []
+        for i in range(seq_length, len(features)):
+            # skip windows that span two symbols (blocks are contiguous, so a
+            # boundary inside the window means first != last symbol id)
+            if sample_symbol_ids[i - 1] != sample_symbol_ids[i - seq_length]:
+                continue
+            if sample_timestamps[i] <= 0:
+                continue
+            seq = features[i - seq_length:i]
+            wt = max(reward_weights[i], 0.1) if reward_weights is not None else 1.0
+            if sample_timestamps[i] < thr:
+                Xtr.append(seq); ytr.append(targets[i]); wtr.append(wt)
+            else:
+                Xte.append(seq); yte.append(targets[i])
+        if len(Xtr) < 100 or len(Xte) < 20:
+            return {"status": "skipped", "reason": "insufficient walk-forward sequences"}
+        logger.info("TCN split", variant=variant_name, mode="walk_forward",
+                    train=len(Xtr), test=len(Xte))
+        X_train = torch.tensor(np.array(Xtr, dtype=np.float32))
+        y_train = torch.tensor(np.array(ytr, dtype=np.int64))
+        w_train = torch.tensor(np.array(wtr, dtype=np.float32))
+        X_test = torch.tensor(np.array(Xte, dtype=np.float32))
+        y_test = torch.tensor(np.array(yte, dtype=np.int64))
+    else:
+        # Legacy fallback: positional split (only when timestamps unavailable)
+        X_seqs, y_seqs, w_seqs = [], [], []
+        for i in range(seq_length, len(features)):
+            X_seqs.append(features[i - seq_length:i])
+            y_seqs.append(targets[i])
+            w_seqs.append(max(reward_weights[i], 0.1) if reward_weights is not None else 1.0)
+        if len(X_seqs) < 100:
+            return {"status": "skipped", "reason": "insufficient sequences"}
+        X = torch.tensor(np.array(X_seqs, dtype=np.float32))
+        y = torch.tensor(np.array(y_seqs, dtype=np.int64))
+        w = torch.tensor(np.array(w_seqs, dtype=np.float32))
+        split = int(len(X) * 0.8)
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+        w_train = w[:split]
 
     from torch.utils.data import TensorDataset, DataLoader
     batch_size = TCN_BATCH_SIZE
@@ -1177,6 +1222,8 @@ def train_xgboost_rl(
     output_path: Path,
     n_rounds: int = 20,
     lr: float = 0.03,
+    sample_timestamps: Optional[np.ndarray] = None,
+    sample_symbol_ids: Optional[np.ndarray] = None,
 ) -> dict:
     """Train/update XGBoost with RL reward-weighted samples.
 
@@ -1203,17 +1250,32 @@ def train_xgboost_rl(
     elif features.shape[1] > len(feature_names):
         features = features[:, :len(feature_names)]
 
-    # Walk-forward split
-    split = int(len(features) * 0.8)
-    X_train, X_test = features[:split], features[split:]
-    y_train, y_test = targets[:split], targets[split:]
+    # TRUE walk-forward split by time when timestamps are available: train on
+    # the oldest 80%, test on the most recent 20%. The old positional split on
+    # a non-deterministically ordered concatenation let the incrementally
+    # trained booster be scored on rows it had memorised in earlier cycles
+    # (the implausible ~0.93 accuracy). Falls back to positional if no times.
+    thr = _walk_forward_threshold(sample_timestamps, 0.8) if sample_timestamps is not None else None
+    if thr is not None and len(sample_timestamps) == len(features):
+        ts = np.asarray(sample_timestamps, dtype=np.float64)
+        train_mask = (ts > 0) & (ts < thr)
+        test_mask = (ts > 0) & (ts >= thr)
+        if train_mask.sum() > 100 and test_mask.sum() > 50:
+            X_train, X_test = features[train_mask], features[test_mask]
+            y_train, y_test = targets[train_mask], targets[test_mask]
+            w_train = (np.maximum(reward_weights[train_mask], 0.1)
+                       if reward_weights is not None else np.ones(int(train_mask.sum())))
+        else:
+            thr = None  # not enough rows either side; use fallback
+    if thr is None:
+        split = int(len(features) * 0.8)
+        X_train, X_test = features[:split], features[split:]
+        y_train, y_test = targets[:split], targets[split:]
+        w_train = (np.maximum(reward_weights[:split], 0.1)
+                   if reward_weights is not None else np.ones(len(X_train)))
 
-    # RL sample weights
-    if reward_weights is not None:
-        w_train = np.maximum(reward_weights[:split], 0.1)
-    else:
-        w_train = np.ones(len(X_train))
-
+    logger.info("XGBoost split", mode="walk_forward" if thr is not None else "positional",
+                train=len(X_train), test=len(X_test))
     dtrain = xgb.DMatrix(X_train, label=y_train, weight=w_train, feature_names=feature_names)
     dtest = xgb.DMatrix(X_test, label=y_test, feature_names=feature_names)
 
@@ -1626,6 +1688,10 @@ async def training_cycle(pool: asyncpg.Pool, redis: aioredis.Redis,
     targets_5 = np.concatenate(all_targets_5)
     reward_weights = np.concatenate(all_reward_weights)
     sample_timestamps = np.concatenate(all_timestamps)
+    # Per-block id (each symbol's rows are a contiguous block) so the training
+    # functions can keep sequences from crossing symbol boundaries and split
+    # by time instead of by position. Aligns 1:1 with `features`.
+    sample_symbol_ids = np.concatenate([np.full(len(f), i) for i, f in enumerate(all_features)])
 
     # v5: Apply per-sample PnL-based weights from recent trade history
     pnl_sample_weights = await fetch_trade_sample_weights(redis, len(features), sample_timestamps)
@@ -1675,6 +1741,8 @@ async def training_cycle(pool: asyncpg.Pool, redis: aioredis.Redis,
         hidden_channels=192,
         seq_length=30,
         variant_name="tcn",
+        sample_timestamps=sample_timestamps,
+        sample_symbol_ids=sample_symbol_ids,
     )
 
     async def _train_variant(variant_cfg):
@@ -1695,6 +1763,8 @@ async def training_cycle(pool: asyncpg.Pool, redis: aioredis.Redis,
                 hidden_channels=v_hc,
                 seq_length=v_sl,
                 variant_name=vname,
+                sample_timestamps=sample_timestamps,
+                sample_symbol_ids=sample_symbol_ids,
             )
             logger.info(f"TCN variant {vname} trained (full epochs)",
                         accuracy=meta.get("accuracy", 0),
@@ -1724,6 +1794,8 @@ async def training_cycle(pool: asyncpg.Pool, redis: aioredis.Redis,
         MODELS_DIR,
         XGB_BOOST_ROUNDS_PER_CYCLE,
         LEARNING_RATE_XGB,
+        sample_timestamps,
+        sample_symbol_ids,
     )
 
     # v6: Performance gating — rolling window + staleness override
