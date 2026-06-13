@@ -60,10 +60,10 @@ while true; do
     MDS=$(curl -s --max-time 5 http://localhost:8001/health 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('symbols_total',0))" 2>/dev/null)
     if [ -n "$MDS" ] && [ "$MDS" -lt $((EXPECTED_PAIRS - 4)) ]; then P="$P market-data-only-$MDS/$EXPECTED_PAIRS-pairs"; fi
 
-    # POSITIVE: first/new trade executed (the thing the user is waiting for)
+    # POSITIVE: every new closed trade — full detail + running stats
     TR=$(R LLEN trade_history); TR=${TR:-0}
     if [ "$TR" -gt "$PREV_TRADES" ]; then
-        echo "$(date '+%H:%M') ✅ TRADE EXECUTED — trade_history $PREV_TRADES -> $TR"
+        /home/coder/Goblin/venv/bin/python3 /home/coder/Goblin/scripts/trade_report.py "$(date '+%H:%M')" "$PREV_TRADES" 2>/dev/null
         PREV_TRADES=$TR
     fi
     # POSITIVE: position open/close state change + live exposure
