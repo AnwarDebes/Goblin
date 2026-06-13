@@ -85,8 +85,12 @@ async def validate_signal(signal: Signal) -> tuple[bool, str, float]:
     if portfolio.daily_pnl <= -(STARTING_CAPITAL * MAX_DAILY_LOSS_PCT):
         return False, "daily_loss_limit_reached", 0
 
-    # Dynamic position limit: reject if remaining capital can't fund a minimum-sized position
-    if signal.action == "buy":
+    # Reserve room for a follow-up position ONLY when not in full-allocation
+    # mode. With MAX_POSITION_PCT >= 1.0 the user wants a single position using
+    # all capital, so this reservation must be skipped — otherwise it rejects
+    # every full-size entry (the insufficient_capital_for_new_positions block
+    # that stopped all trading). The cap + over-spend guard below still apply.
+    if signal.action == "buy" and MAX_POSITION_PCT < 1.0:
         remaining_after = portfolio.available_capital - signal.amount
         if remaining_after < MIN_POSITION_USD * 0.5:
             return False, "insufficient_capital_for_new_positions", 0
