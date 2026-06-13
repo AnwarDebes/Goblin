@@ -1078,6 +1078,29 @@ async def emergency_stop():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/v2/positions/{symbol:path}/close")
+async def close_single_position(symbol: str):
+    """Manually close ONE open position at market (user-triggered from the
+    dashboard). symbol contains a slash (e.g. SIREN/USDT), captured via :path.
+    Routes through the same signal->risk->executor path as auto-exits."""
+    try:
+        pos_resp = await http_client.get(f"{SERVICES['position']}/positions")
+        positions = pos_resp.json()
+        if symbol not in positions:
+            raise HTTPException(status_code=404, detail=f"No open position for {symbol}")
+        amount = positions[symbol].get("amount", 0)
+        await http_client.post(
+            f"{SERVICES['signal']}/manual-signal",
+            params={"symbol": symbol, "action": "sell", "amount": amount},
+        )
+        logger.info("Manual close requested", symbol=symbol, amount=amount)
+        return {"status": "success", "symbol": symbol, "action": "manual_close", "amount": amount}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/emergency/close-all")
 async def emergency_close_all():
     try:

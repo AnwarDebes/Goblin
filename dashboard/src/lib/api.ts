@@ -266,6 +266,18 @@ export async function getPositions(): Promise<Position[]> {
   }
 }
 
+/** Manually close one open position at market (user-triggered from the UI).
+ * symbol contains a slash (e.g. "SIREN/USDT"); the gateway captures it via a
+ * path converter, so we send it unencoded. */
+export async function closePosition(symbol: string): Promise<{ status: string; symbol?: string }> {
+  const res = await fetch(`${API_BASE}/api/v2/positions/${symbol}/close`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok) throw new Error(`Close failed (${res.status})`);
+  return res.json();
+}
+
 export async function getTrades(
   limit = 20,
   offset = 0,

@@ -1,9 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { usePortfolio, usePositions } from "@/hooks/usePortfolio";
 import { cn } from "@/lib/utils";
 import { formatCurrency, formatPercent, getTimeSince } from "@/lib/utils";
+import { closePosition } from "@/lib/api";
 import type { Position, PortfolioState } from "@/types";
 
 interface TreemapItem {
@@ -29,6 +31,26 @@ export default function PortfolioTreemap({ portfolio: propPortfolio, positions: 
   const portfolio = propPortfolio ?? hookPortfolio;
   const positions = propPositions ?? hookPositions;
   const [hovered, setHovered] = useState<string | null>(null);
+  const [closing, setClosing] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  const handleClose = async (symbol: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm(`Close ${symbol} position at market now?`)) return;
+    setClosing(symbol);
+    try {
+      await closePosition(symbol);
+      // backend routes the sell through signal->risk->executor; refetch shortly
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ["positions"] });
+        queryClient.invalidateQueries({ queryKey: ["portfolio"] });
+      }, 1500);
+    } catch (err) {
+      window.alert(`Failed to close ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setTimeout(() => setClosing(null), 2000);
+    }
+  };
 
   const items: TreemapItem[] = positions.map((p) => {
     // Account for position side in PnL calculation
@@ -105,6 +127,17 @@ export default function PortfolioTreemap({ portfolio: propPortfolio, positions: 
               onMouseEnter={() => setHovered(item.symbol)}
               onMouseLeave={() => setHovered(null)}
             >
+              {/* Manual close (−): user-triggered market exit */}
+              {!item.isCash && (
+                <button
+                  onClick={(e) => handleClose(item.symbol, e)}
+                  disabled={closing === item.symbol}
+                  title={`Close ${item.symbol} at market`}
+                  className="absolute top-0.5 right-0.5 z-30 flex h-4 w-4 items-center justify-center rounded-full bg-red-600/80 text-white text-[11px] font-bold leading-none hover:bg-red-500 disabled:opacity-50"
+                >
+                  {closing === item.symbol ? "…" : "−"}
+                </button>
+              )}
               <span className="text-xs font-bold text-white">{item.symbol.replace("/USDT", "")}</span>
               <span className="text-[10px] text-gray-300">{formatCurrency(item.value)}</span>
               {!item.isCash && (
