@@ -169,11 +169,16 @@ async def _collect_signals():
         if message["type"] == "message":
             try:
                 signal_data = json.loads(message["data"])
-                async with _buffer_lock:
-                    _signal_buffer.append(signal_data)
                 SIGNALS_RECEIVED.inc()
+                # Sells/exits (incl. manual closes) execute IMMEDIATELY — no 30s
+                # ranking buffer. Only buy entries are buffered for ranking.
+                if signal_data.get("action") in ("sell", "short_exit"):
+                    await process_signal(signal_data)
+                else:
+                    async with _buffer_lock:
+                        _signal_buffer.append(signal_data)
             except Exception as e:
-                logger.error("Error buffering signal", error=str(e))
+                logger.error("Error handling signal", error=str(e))
 
 
 async def _flush_buffer():

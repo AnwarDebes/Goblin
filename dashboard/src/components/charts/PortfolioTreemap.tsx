@@ -36,7 +36,7 @@ export default function PortfolioTreemap({ portfolio: propPortfolio, positions: 
 
   const handleClose = async (symbol: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!window.confirm(`Close ${symbol} position at market now?`)) return;
+    // No confirmation — instant close. Exits are time-critical.
     setClosing(symbol);
     try {
       await closePosition(symbol);
