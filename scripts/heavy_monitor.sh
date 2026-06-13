@@ -11,6 +11,7 @@ WORKER_FAILS=0
 PREV_TRADES=$(R LLEN trade_history); PREV_TRADES=${PREV_TRADES:-0}
 STALL_REF=""; STALL_COUNT=0
 PREV_OPEN=-1; FE_TICK=0
+LAST_P=""; LAST_PT=0   # dedup: don't re-spam an unchanged problem every cycle
 EXPECTED_PAIRS=$(echo "$TRADING_PAIRS" | tr ',' '\n' | grep -c .)
 
 while true; do
@@ -80,6 +81,18 @@ while true; do
         [ -n "$FE" ] && echo "$(date '+%H:%M') 📊 forward-edge: $FE"
     fi
 
-    [ -n "$P" ] && echo "$(date '+%H:%M') ⚠️ UNHEALTHY:$P"
+    # Emit a problem only when it's NEW/changed, or every 15 min if persistent,
+    # or when it clears. Avoids spamming the same known issue every 2 minutes.
+    NOW=$(date +%s)
+    if [ -n "$P" ]; then
+        if [ "$P" != "$LAST_P" ] || [ $((NOW - LAST_PT)) -ge 900 ]; then
+            echo "$(date '+%H:%M') ⚠️ UNHEALTHY:$P"
+            LAST_PT=$NOW
+        fi
+        LAST_P="$P"
+    else
+        [ -n "$LAST_P" ] && echo "$(date '+%H:%M') ✅ RECOVERED (was:$LAST_P)"
+        LAST_P=""; LAST_PT=0
+    fi
     sleep 120
 done
