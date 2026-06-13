@@ -53,7 +53,7 @@ class OrderRequest(BaseModel):
     side: str = Field(..., pattern="^(buy|sell|short_entry|short_exit)$")
     amount: float = Field(..., gt=0)
     price: Optional[float] = None
-    order_type: str = "limit"
+    order_type: str = "market"  # 2026-06-13: was "limit" — unfilled limit entries hung open, locking capital (e.g. ALLO $4.20) and creating phantom positions. Market fills instantly; right for fast movers.
     position_size_usd: Optional[float] = None  # From portfolio-optimizer
     reason: str = ""
 
