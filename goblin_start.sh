@@ -615,6 +615,16 @@ if [ -f "$ROOT/scripts/goblin_backup_loop.sh" ]; then
     echo "    Backup loop ........ running (every 15 min -> shared/backups)"
 fi
 
+# Tunnel->Worker KV sync: keeps goblin-api.goblin-anwar.workers.dev pointed at
+# the live tunnel after every reconnect (quick-tunnel URLs rotate), so the
+# Vercel frontend never goes blank on a stale pointer.
+pkill -f "tunnel_kv_sync.sh" 2>/dev/null || true
+if [ -f "$ROOT/scripts/tunnel_kv_sync.sh" ]; then
+    nohup bash "$ROOT/scripts/tunnel_kv_sync.sh" >/dev/null 2>&1 &
+    echo $! > "$LOGS/tunnel-kv-sync.pid"
+    echo "    Tunnel KV sync ..... running (re-points worker within ~60s of rotation)"
+fi
+
 echo ""
 echo "  Dashboard:  http://localhost:3000"
 echo "  API:        http://localhost:8080"
