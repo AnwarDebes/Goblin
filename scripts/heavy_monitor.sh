@@ -10,6 +10,8 @@ PG() { PGPASSWORD="$POSTGRES_PASSWORD" psql -h localhost -p "$POSTGRES_PORT" -U 
 WORKER_FAILS=0
 PREV_TRADES=$(R LLEN trade_history); PREV_TRADES=${PREV_TRADES:-0}
 STALL_REF=""; STALL_COUNT=0
+PREV_OPEN=-1; FE_TICK=0
+EXPECTED_PAIRS=$(echo "$TRADING_PAIRS" | tr ',' '\n' | grep -c .)
 
 while true; do
     P=""
@@ -47,14 +49,35 @@ while true; do
     if curl -sf -o /dev/null --max-time 12 "https://goblin-api.goblin-anwar.workers.dev/health" 2>/dev/null; then WORKER_FAILS=0; else
         WORKER_FAILS=$((WORKER_FAILS+1)); [ "$WORKER_FAILS" -ge 2 ] && P="$P frontend-worker-down"; fi
     # 11. checkpoint freshness (a _latest model saved within 30 min => training is persisting)
+    # 60-min threshold: the promotion gate legitimately refuses non-improving
+    # variants for long stretches (so _latest is rightly stale); the training
+    # stall check (#5) is the real CL-health signal.
     NEWEST=$(ls -t shared/models/*_latest.pt 2>/dev/null | head -1)
-    if [ -n "$NEWEST" ]; then MAGE=$(( ($(date +%s) - $(stat -c %Y "$NEWEST")) / 60 )); [ "$MAGE" -gt 30 ] && P="$P checkpoints-stale-${MAGE}min"; fi
+    if [ -n "$NEWEST" ]; then MAGE=$(( ($(date +%s) - $(stat -c %Y "$NEWEST")) / 60 )); [ "$MAGE" -gt 60 ] && P="$P checkpoints-stale-${MAGE}min"; fi
+
+    # 12. market-data must keep up with all pairs (rate-limit / drop check)
+    MDS=$(curl -s --max-time 5 http://localhost:8001/health 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('symbols_total',0))" 2>/dev/null)
+    if [ -n "$MDS" ] && [ "$MDS" -lt $((EXPECTED_PAIRS - 4)) ]; then P="$P market-data-only-$MDS/$EXPECTED_PAIRS-pairs"; fi
 
     # POSITIVE: first/new trade executed (the thing the user is waiting for)
     TR=$(R LLEN trade_history); TR=${TR:-0}
     if [ "$TR" -gt "$PREV_TRADES" ]; then
         echo "$(date '+%H:%M') ✅ TRADE EXECUTED — trade_history $PREV_TRADES -> $TR"
         PREV_TRADES=$TR
+    fi
+    # POSITIVE: position open/close state change + live exposure
+    OPEN=$(R GET portfolio_state | python3 -c "import sys,json;print(int(json.load(sys.stdin).get('open_positions',0)))" 2>/dev/null); OPEN=${OPEN:-0}
+    if [ "$OPEN" != "$PREV_OPEN" ] && [ "$PREV_OPEN" != "-1" ]; then
+        POS=$(R HKEYS positions 2>/dev/null | tr '\n' ' ')
+        echo "$(date '+%H:%M') 📈 POSITION CHANGE — open $PREV_OPEN -> $OPEN  [$POS]"
+    fi
+    PREV_OPEN=$OPEN
+
+    # Periodic forward-edge snapshot (~every 30 min) so skill is always visible
+    FE_TICK=$((FE_TICK+1))
+    if [ $((FE_TICK % 15)) -eq 0 ]; then
+        FE=$(/home/coder/Goblin/venv/bin/python3 /home/coder/Goblin/scripts/forward_edge.py 2>/dev/null | tail -1)
+        [ -n "$FE" ] && echo "$(date '+%H:%M') 📊 forward-edge: $FE"
     fi
 
     [ -n "$P" ] && echo "$(date '+%H:%M') ⚠️ UNHEALTHY:$P"
