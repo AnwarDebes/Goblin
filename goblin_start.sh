@@ -625,6 +625,15 @@ if [ -f "$ROOT/scripts/tunnel_kv_sync.sh" ]; then
     echo "    Tunnel KV sync ..... running (re-points worker within ~60s of rotation)"
 fi
 
+# Heavy health monitor: full-system checks every 2 min, logs problems +
+# first-trade events to logs/heavy_monitor.log (survives restarts).
+pkill -f "heavy_monitor.sh" 2>/dev/null || true
+if [ -f "$ROOT/scripts/heavy_monitor.sh" ]; then
+    nohup bash "$ROOT/scripts/heavy_monitor.sh" >> "$LOGS/heavy_monitor.log" 2>&1 &
+    echo $! > "$LOGS/heavy-monitor.pid"
+    echo "    Heavy monitor ...... running (problems + trades -> logs/heavy_monitor.log)"
+fi
+
 echo ""
 echo "  Dashboard:  http://localhost:3000"
 echo "  API:        http://localhost:8080"
