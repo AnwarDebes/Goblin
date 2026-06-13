@@ -170,13 +170,11 @@ async def _collect_signals():
             try:
                 signal_data = json.loads(message["data"])
                 SIGNALS_RECEIVED.inc()
-                # Sells/exits (incl. manual closes) execute IMMEDIATELY — no 30s
-                # ranking buffer. Only buy entries are buffered for ranking.
-                if signal_data.get("action") in ("sell", "short_exit"):
-                    await process_signal(signal_data)
-                else:
-                    async with _buffer_lock:
-                        _signal_buffer.append(signal_data)
+                # SPEED IS CRITICAL on BOTH entries and exits — process EVERY
+                # signal immediately, no 30s ranking buffer. One-position-at-a-time
+                # + MIN_TIME_BETWEEN_TRADES cap the rate; the first qualifying
+                # signal wins. Milliseconds can flip a trade from win to loss.
+                await process_signal(signal_data)
             except Exception as e:
                 logger.error("Error handling signal", error=str(e))
 
