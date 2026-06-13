@@ -107,6 +107,10 @@ processed_signals: set = set()
 symbol_loss_cooldowns: Dict[str, datetime] = {}  # symbol → cooldown expiry time
 symbol_consecutive_losses: Dict[str, int] = {}   # symbol → consecutive loss count
 last_regime: Dict[str, RegimeState] = {}  # Track last regime per symbol
+last_prediction_at: Optional[datetime] = None  # heartbeat: when a prediction was last consumed
+_pred_window_max_conf: float = 0.0   # rolling max confidence for the liveness summary
+_pred_window_count: int = 0
+_pred_last_summary: Optional[datetime] = None
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -696,18 +700,54 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
     return signal
 
 
+async def _supervise(coro_factory, name: str):
+    """Keep a pubsub listener alive forever. A Redis connection blip makes
+    pubsub.listen() raise, which silently killed the bare create_task and
+    severed the prediction->signal pipeline for ~20h on 2026-06-12. The
+    supervisor catches that, re-subscribes, and resumes."""
+    while True:
+        try:
+            await coro_factory()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"{name} listener crashed - restarting in 5s",
+                         error=str(e), exc_info=True)
+        else:
+            logger.warning(f"{name} listener returned - restarting in 5s")
+        await asyncio.sleep(5)
+
+
 async def listen_for_predictions():
+    global last_prediction_at, _pred_window_max_conf, _pred_window_count, _pred_last_summary
     pubsub = redis_client.pubsub()
     await pubsub.psubscribe("predictions:*")
     logger.info("Subscribed to predictions:* (3-layer strategy active)")
 
     async for message in pubsub.listen():
         if message["type"] == "pmessage":
+            last_prediction_at = datetime.utcnow()  # heartbeat: pipeline is live
             try:
                 channel = message["channel"]
                 channel_parts = channel.split(":")
                 if len(channel_parts) >= 2:
                     prediction = json.loads(message["data"])
+                    # Throttled liveness summary (~once/min): a quiet, sub-threshold
+                    # market should look like "considering", not "frozen". Low
+                    # confidence is dropped silently in generate_signal, so without
+                    # this the service looks dead when it is working correctly.
+                    _pred_window_max_conf = max(_pred_window_max_conf,
+                                                float(prediction.get("confidence", 0) or 0))
+                    _pred_window_count += 1
+                    now = datetime.utcnow()
+                    if _pred_last_summary is None or (now - _pred_last_summary).total_seconds() >= 60:
+                        logger.info("Signal pipeline alive - evaluating predictions",
+                                    evaluated=_pred_window_count,
+                                    max_confidence=round(_pred_window_max_conf, 3),
+                                    entry_threshold=CONFIDENCE_THRESHOLD)
+                        _pred_last_summary = now
+                        _pred_window_max_conf = 0.0
+                        _pred_window_count = 0
                     if prediction.get("symbol") in [s.strip() for s in TRADING_PAIRS]:
                         signal = await generate_signal(prediction)
                         if signal:
@@ -831,8 +871,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Failed to initialize loss cooldowns", error=str(e))
 
-    pred_task = asyncio.create_task(listen_for_predictions())
-    pos_task = asyncio.create_task(listen_for_position_updates())
+    pred_task = asyncio.create_task(_supervise(listen_for_predictions, "predictions"))
+    pos_task = asyncio.create_task(_supervise(listen_for_position_updates, "positions"))
 
     yield
 
@@ -847,12 +887,21 @@ app = FastAPI(title="Signal Service", version="2.0.0", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
+    # Listener heartbeat: predictions publish ~every 30s, so a gap >180s means
+    # the prediction->signal pipeline is severed even though this server is up.
+    pred_age = None
+    listener_ok = False
+    if last_prediction_at is not None:
+        pred_age = (datetime.utcnow() - last_prediction_at).total_seconds()
+        listener_ok = pred_age < 180
     return {
-        "status": "healthy",
+        "status": "healthy" if listener_ok else "degraded",
         "version": "2.0.0",
         "strategy_layers": ["data_age_gate", "regime_filter", "edge_gate", "vol_sizing"],
         "max_data_age_minutes": MAX_DATA_AGE_MINUTES,
         "positions_tracked": len(current_positions),
+        "prediction_listener_ok": listener_ok,
+        "seconds_since_last_prediction": round(pred_age, 1) if pred_age is not None else None,
     }
 
 
