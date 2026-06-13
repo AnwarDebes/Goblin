@@ -13,6 +13,7 @@ PREV_TRADES=$(R LLEN trade_history); PREV_TRADES=${PREV_TRADES:-0}
 PREV_OPEN=-1; FE_TICK=0
 LAST_P=""; LAST_PT=0
 ERR_REF=0
+CLOSING_LAST=""; CLOSING_STREAK=0   # only flag a position genuinely stuck-closing, not mid-close
 EXPECTED_PAIRS=$(echo "$TRADING_PAIRS" | tr ',' '\n' | grep -c .)
 
 while true; do
@@ -61,8 +62,14 @@ while true; do
     if [ -n "$GMEM" ]; then GU=$(echo "${GMEM%,*}"|tr -dc 0-9); GT=$(echo "${GMEM#*,}"|tr -dc 0-9)
         [ -n "$GT" ] && [ "$GT" -gt 0 ] && [ "$((GU*100/GT))" -ge 98 ] && P="$P gpu-vram-${GU}/${GT}MB"; fi
     # 11. risk/regression: stuck 'closing' positions (the dust bug) + deep-underwater open positions
-    STUCK=$(R HVALS positions | python3 -c "import sys,json;print(sum(1 for l in sys.stdin if l.strip() and json.loads(l).get('status')=='closing'))" 2>/dev/null)
-    [ -n "$STUCK" ] && [ "$STUCK" -gt 0 ] && P="$P stuck-closing-$STUCK"
+    # A position is briefly 'closing' during every healthy exit, so only flag it
+    # when the SAME symbol stays closing across 3+ checks (~6min = genuinely stuck).
+    CLOSING_NOW=$(R HVALS positions | python3 -c "import sys,json
+for l in sys.stdin:
+    if l.strip() and json.loads(l).get('status')=='closing': print(json.loads(l).get('symbol','?')); break" 2>/dev/null)
+    if [ -n "$CLOSING_NOW" ] && [ "$CLOSING_NOW" = "$CLOSING_LAST" ]; then CLOSING_STREAK=$((CLOSING_STREAK+1)); else CLOSING_STREAK=$([ -n "$CLOSING_NOW" ] && echo 1 || echo 0); fi
+    CLOSING_LAST="$CLOSING_NOW"
+    [ "$CLOSING_STREAK" -ge 3 ] && P="$P stuck-closing-${CLOSING_NOW}-$((CLOSING_STREAK*2))min"
     DEEP=$(R HVALS positions | python3 -c "
 import sys,json
 for l in sys.stdin:
