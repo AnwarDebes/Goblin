@@ -123,9 +123,14 @@ async def sync_portfolio_balance():
     try:
         if hasattr(exchange, 'apiKey') and exchange.apiKey and exchange.apiKey != "your_mexc_api_key_here":
             balance = await exchange.fetch_balance()
-            usdt_balance = balance.get("USDT", {}).get("free", 0) or 0
+            usdt_info = balance.get("USDT", {})
+            usdt_balance = usdt_info.get("free", 0) or 0   # free = available for NEW entries
+            # Portfolio VALUE must include USDT locked in open orders ("used"),
+            # else an unfilled order makes the account look like a huge loss
+            # (a $4.20 locked order read -94% and nearly tripped the daily kill).
+            usdt_total = (usdt_info.get("total", 0) or 0) or (usdt_balance + (usdt_info.get("used", 0) or 0))
 
-            total_value = usdt_balance
+            total_value = usdt_total
             for coin, coin_data in balance.items():
                 if coin != "USDT" and isinstance(coin_data, dict):
                     free = coin_data.get("free", 0) or 0
