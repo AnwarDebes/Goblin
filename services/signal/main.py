@@ -253,6 +253,8 @@ async def _check_circuit_breaker() -> bool:
 # when a majority of BTC trend signals are negative. Fail-open (missing BTC data does
 # not block, so a feature glitch cannot halt all trading). Toggle MARKET_REGIME_GATE.
 MARKET_REGIME_GATE = os.getenv("MARKET_REGIME_GATE", "true").lower() == "true"
+LIQUID_ONLY = os.getenv("LIQUID_ONLY", "false").lower() == "true"
+LIQUID_SYMBOLS = set(s.strip() for s in os.getenv("LIQUID_SYMBOLS", "").split(",") if s.strip())
 
 
 async def btc_market_risk_off() -> tuple:
@@ -495,6 +497,12 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
             logger.info("Market-regime blocked long (BTC downtrend)",
                         symbol=symbol, btc=btc_detail)
             return None
+
+    # Liquidity gate: only open longs in coins we can exit cleanly. Microcap
+    # flash-tails (e.g. BLUAI -5% in one tick) were the main loss source.
+    if LIQUID_ONLY and action == "buy" and symbol not in LIQUID_SYMBOLS:
+        SIGNALS_SKIPPED.labels(reason="illiquid_skipped").inc()
+        return None
 
     # ── Fetch Fear & Greed Index for contrarian sizing ─────────────
     fear_greed_index = 50.0  # default: neutral
