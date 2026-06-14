@@ -80,17 +80,22 @@ YOUNG_POSITION_MINUTES = 1.0     # 1 min guard (was 2)
 # Momentum override: widen stop when position shows strong upward momentum
 MOMENTUM_OVERRIDE_WIDEN = 1.2    # 20% wider stop when momentum is strong (was 40%)
 
-# Profit lock thresholds — protect winners early since avg wins were only 0.4%.
-# 2026-05-24: thresholds rescaled to match the actual profit distribution observed
-# in production (most "wins" exit in the 0.3-0.8% range, very few reached 2%+).
-# Locking breakeven at 0.6% peak preserves more wins that otherwise reverse to losses.
-PROFIT_LOCK_BREAKEVEN_THRESHOLD = 0.006  # 0.6%+ profit → stop at breakeven
-PROFIT_LOCK_TIER1_THRESHOLD = 0.012      # 1.2%+ profit → lock 0.5% profit
-PROFIT_LOCK_TIER1_FLOOR = 0.005          # Minimum locked profit at tier 1
-PROFIT_LOCK_TIER2_THRESHOLD = 0.020      # 2.0%+ profit → lock 1% profit
-PROFIT_LOCK_TIER2_FLOOR = 0.010          # Minimum locked profit at tier 2
-PROFIT_LOCK_TIER3_THRESHOLD = 0.035      # 3.5%+ profit → lock 2% profit
-PROFIT_LOCK_TIER3_FLOOR = 0.020          # Minimum locked profit at tier 3
+# Profit lock thresholds. 2026-06-14: forensic decomposition of the live trade
+# sample showed winners peak near 1% then give the gain right back. SIREN peaked
+# +0.99% and exited -0.08% (the 0% breakeven lock), BTW peaked +1.25% exited +0.44%.
+# With losers running to the 1.0-1.2% hard floor that is a ~1:4 reward:risk, which
+# needs an ~80% hit rate to break even (actual hit rate is ~29%). Recalibrated to
+# the observed ~1% amplitude, and the lowest lock now clears the round-trip fee
+# (a literal 0% "breakeven" lock still books a fee loss). Tiers capture ~55-65% of
+# peaks in the 0.5-2% band where our trades actually live.
+PROFIT_LOCK_BREAKEVEN_THRESHOLD = 0.005  # 0.5%+ peak → lock +0.2% (net ~breakeven after fees)
+PROFIT_LOCK_BREAKEVEN_FLOOR = 0.002      # lowest lock clears the round-trip fee, not 0
+PROFIT_LOCK_TIER1_THRESHOLD = 0.008      # 0.8%+ peak → lock 0.45%
+PROFIT_LOCK_TIER1_FLOOR = 0.0045
+PROFIT_LOCK_TIER2_THRESHOLD = 0.012      # 1.2%+ peak → lock 0.8%
+PROFIT_LOCK_TIER2_FLOOR = 0.008
+PROFIT_LOCK_TIER3_THRESHOLD = 0.020      # 2.0%+ peak → lock 1.3%
+PROFIT_LOCK_TIER3_FLOOR = 0.013
 
 # Patience exit: only for positions stuck losing for extended time.
 # 2026-05-24: tightened — 60min/1.5% allowed losers to drift too long.
@@ -298,7 +303,7 @@ def compute_smart_stop(
     elif peak_pnl_pct >= PROFIT_LOCK_TIER1_THRESHOLD:
         profit_lock_pct = PROFIT_LOCK_TIER1_FLOOR       # 1%+ peak → lock 0.3%
     elif peak_pnl_pct >= PROFIT_LOCK_BREAKEVEN_THRESHOLD:
-        profit_lock_pct = 0.0                           # 0.5%+ peak → lock breakeven
+        profit_lock_pct = PROFIT_LOCK_BREAKEVEN_FLOOR   # 0.5%+ peak → lock fee-covering +0.2%
 
     # ══════════════════════════════════════════════════════════════════
     # DETERMINE EXIT
@@ -324,9 +329,9 @@ def compute_smart_stop(
         elif peak_pnl_pct >= PROFIT_LOCK_TIER1_THRESHOLD and pnl_pct < PROFIT_LOCK_TIER1_FLOOR:
             profit_lock_breached = True
             profit_lock_pct = PROFIT_LOCK_TIER1_FLOOR
-        elif peak_pnl_pct >= PROFIT_LOCK_BREAKEVEN_THRESHOLD and pnl_pct < 0:
+        elif peak_pnl_pct >= PROFIT_LOCK_BREAKEVEN_THRESHOLD and pnl_pct < PROFIT_LOCK_BREAKEVEN_FLOOR:
             profit_lock_breached = True
-            profit_lock_pct = 0.0
+            profit_lock_pct = PROFIT_LOCK_BREAKEVEN_FLOOR
 
     # v8: "Always win" — no quick kill, no stale exit at small losses
     # Only exit at a loss in catastrophic scenarios (>5% loss after 2 hours)
