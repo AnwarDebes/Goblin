@@ -554,12 +554,13 @@ async def update_prices():
                             continue
 
                         # ── STALE POSITION EXIT ──
-                        # Horizon-aware: a position only counts as "stale" if it's been
-                        # held past 2× the model's prediction horizon AND is in the noise
-                        # band. Previously 30min hard-coded; now 30 min for the 15-min
-                        # horizon (= 2× horizon), still gives positions time to develop.
+                        # Horizon-aware staleness. 2026-06-14: extended from 2x to 6x
+                        # horizon (30 to 90 min) for the shift to fewer, longer-held
+                        # positions. On a small account, churning flat positions every
+                        # 30 min bleeds fees; give them time to make a fee-clearing move.
+                        # The -1% hard floor still caps downside while we wait.
                         position_horizon = getattr(pos, "horizon_minutes", 15)
-                        stale_threshold = max(30, position_horizon * 2)
+                        stale_threshold = max(90, position_horizon * 6)
                         if hold_time_minutes > stale_threshold and -0.005 < pnl_pct < 0.003:
                             logger.info("STALE POSITION EXIT — near-zero PnL after horizon×2",
                                         symbol=symbol, pnl_pct=f"{pnl_pct:.2%}",
