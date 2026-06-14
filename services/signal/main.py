@@ -255,6 +255,17 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
     current_price = _safe_float(prediction.get("current_price"), 0.0)
     breakdown = prediction.get("breakdown", {})
 
+    # 2026-06-14 INVERSION EXPERIMENT: the models are statistically ANTI-predictive
+    # on the 15-min forward horizon (45.2% hit, n=857, z=-2.8 vs 50% — significantly
+    # WRONG, not just coin-flip). A reliably-wrong signal flipped is reliably-right.
+    # Flip the direction at the source so ALL downstream logic (gates, edge, action)
+    # stays consistent. Flag-gated + reversible; default off. On spot (long-only)
+    # this means we go LONG when the model predicts DOWN. Measure success by the
+    # TRADE win-rate going forward (the pq tracker still scores the raw model).
+    if direction != "hold" and os.getenv("INVERT_SIGNALS", "false").lower() == "true":
+        direction = {"buy": "sell", "strong_buy": "strong_sell", "up": "down",
+                     "sell": "buy", "strong_sell": "strong_buy", "down": "up"}.get(direction, direction)
+
     # Price fallbacks
     if current_price <= 0:
         current_price = _safe_float(prediction.get("price"), 0.0)
