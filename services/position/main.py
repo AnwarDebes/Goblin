@@ -748,6 +748,16 @@ async def listen_for_prediction_exits():
             direction = prediction.get("direction", "hold")
             confidence = float(prediction.get("confidence", 0))
 
+            # Keep AI exits consistent with INVERT_SIGNALS. Entries treat the model
+            # as anti-predictive and invert it, so the exit must invert too: feeding
+            # the raw direction here would close inverted longs on raw-sell signals
+            # that the thesis reads as bullish. Same flip map as signal entry. The
+            # exit_tracker is the single source of AI pressure (smart_stop reads it
+            # via get_state), so inverting here makes every AI-driven exit coherent.
+            if direction != "hold" and os.getenv("INVERT_SIGNALS", "false").lower() == "true":
+                direction = {"buy": "sell", "strong_buy": "strong_sell", "up": "down",
+                             "sell": "buy", "strong_sell": "strong_buy", "down": "up"}.get(direction, direction)
+
             # Only process predictions for symbols we hold
             if symbol not in positions or positions[symbol].status != "open":
                 continue
