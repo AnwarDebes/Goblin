@@ -39,7 +39,12 @@ while true; do
     PS=$(R GET portfolio_state)
     if [ -z "$PS" ]; then P="$P portfolio_state-missing"; else
         DD=$(echo "$PS" | python3 -c "import sys,json;d=json.load(sys.stdin);sc=d.get('starting_capital',1) or 1;print(d.get('daily_pnl',0)/sc)" 2>/dev/null)
-        [ -n "$DD" ] && awk "BEGIN{exit !($DD < -0.04)}" && P="$P daily-drawdown-near-kill($DD)"
+        # Warn at 80% of the ACTUAL kill, read from trading.env so it cannot go stale
+        # like the old hardcoded -0.04 did after the kill moved 0.05 -> 0.25.
+        KILL=$(grep -E '^DAILY_DRAWDOWN_KILL_PCT=' /home/coder/Goblin/config/trading.env 2>/dev/null | cut -d= -f2 | tr -dc '0-9.')
+        [ -z "$KILL" ] && KILL=0.25
+        WARN=$(awk "BEGIN{print -0.8*$KILL}")
+        [ -n "$DD" ] && awk "BEGIN{exit !($DD < $WARN)}" && P="$P daily-drawdown-near-kill($DD, warn<$WARN)"
     fi
     # 7. background daemons + GPU + data stores
     nvidia-smi >/dev/null 2>&1 || P="$P gpu-unavailable"
