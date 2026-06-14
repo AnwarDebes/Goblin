@@ -247,6 +247,34 @@ async def _check_circuit_breaker() -> bool:
     return False
 
 
+# Market-regime gate: do not take longs while the broad market (BTC) is falling.
+# The dominant historical loss cause was going long into a BTC downtrend (alts fall
+# harder than BTC in risk-off). Reads BTC's own trend features and blocks new longs
+# when a majority of BTC trend signals are negative. Fail-open (missing BTC data does
+# not block, so a feature glitch cannot halt all trading). Toggle MARKET_REGIME_GATE.
+MARKET_REGIME_GATE = os.getenv("MARKET_REGIME_GATE", "true").lower() == "true"
+
+
+async def btc_market_risk_off() -> tuple:
+    """Return (risk_off, detail). risk_off = majority of BTC trend signals negative."""
+    try:
+        raw = await redis_client.get("features:BTC/USDT")
+        if not raw:
+            return False, "no_btc_data"
+        f = json.loads(raw)
+        vals = [
+            f.get("ema_cross_9_21", 0.0),
+            f.get("ema_cross_25_50", 0.0),
+            f.get("macd_histogram", 0.0),
+            f.get("momentum_30m", 0.0),
+            f.get("momentum_60m", 0.0),
+        ]
+        neg = sum(1 for v in vals if v < 0)
+        return neg >= 3, f"neg={neg}/5 ema25_50={vals[1]:.4f} mom60m={vals[4]:.4f}"
+    except Exception as e:
+        return False, f"err:{e}"
+
+
 async def generate_signal(prediction: dict) -> Optional[Signal]:
     """Generate a signal with full 3-layer strategy gating + v13 circuit breaker."""
     symbol = prediction.get("symbol")
@@ -457,6 +485,16 @@ async def generate_signal(prediction: dict) -> Optional[Signal]:
                      regime=regime.regime, choppiness=regime.choppiness,
                      trend_strength=regime.trend_strength)
         return None
+
+    # Market-regime gate (BTC trend): do not buy into a falling market. The biggest
+    # historical loss cause was longs opened while BTC was in a downtrend.
+    if MARKET_REGIME_GATE and action == "buy":
+        btc_risk_off, btc_detail = await btc_market_risk_off()
+        if btc_risk_off:
+            SIGNALS_SKIPPED.labels(reason="btc_risk_off").inc()
+            logger.info("Market-regime blocked long (BTC downtrend)",
+                        symbol=symbol, btc=btc_detail)
+            return None
 
     # ── Fetch Fear & Greed Index for contrarian sizing ─────────────
     fear_greed_index = 50.0  # default: neutral
