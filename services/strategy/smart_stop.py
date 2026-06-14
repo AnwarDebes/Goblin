@@ -62,8 +62,8 @@ REGIME_STOP_MULTS = {
 # 2026-05-24: forensic analysis of 172-trade session showed win/loss size ratio of 0.60
 # (avg win $0.35, avg loss $0.59). Losses were running to 4% while wins were capped
 # near breakeven. Tightening to symmetrize with the typical win-exit point (~0.4-0.5%).
-HARD_FLOOR_LOSS_PCT_NORMAL = 0.012   # 1.2% — match typical win-exit magnitude
-HARD_FLOOR_LOSS_PCT_HIGH_VOL = 0.010 # 1.0% — even tighter in high vol
+HARD_FLOOR_LOSS_PCT_NORMAL = 0.020   # 2026-06-14: widened 1.2% to 2.0% for aggressive/hold-long room
+HARD_FLOOR_LOSS_PCT_HIGH_VOL = 0.018 # high-vol kept slightly tighter; daily kill + balance floor remain the circuit breakers
 
 # Minimum stop: dynamic — used only for trailing after profit
 # v13: Widened trailing to let winners breathe. 0.3% was getting shaken out by noise.
