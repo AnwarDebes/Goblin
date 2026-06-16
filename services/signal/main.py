@@ -253,6 +253,7 @@ async def _check_circuit_breaker() -> bool:
 # when a majority of BTC trend signals are negative. Fail-open (missing BTC data does
 # not block, so a feature glitch cannot halt all trading). Toggle MARKET_REGIME_GATE.
 MARKET_REGIME_GATE = os.getenv("MARKET_REGIME_GATE", "true").lower() == "true"
+SIGNALS_HALTED = os.getenv("SIGNALS_HALTED", "false").lower() == "true"  # global kill switch: block ALL buy/sell signals
 LIQUID_ONLY = os.getenv("LIQUID_ONLY", "false").lower() == "true"
 LIQUID_SYMBOLS = set(s.strip() for s in os.getenv("LIQUID_SYMBOLS", "").split(",") if s.strip())
 
@@ -285,6 +286,10 @@ async def btc_market_risk_off() -> tuple:
 
 async def generate_signal(prediction: dict) -> Optional[Signal]:
     """Generate a signal with full 3-layer strategy gating + v13 circuit breaker."""
+    # 2026-06-16: global trading halt. Blocks ALL buy and
+    # sell signals at the source. Set SIGNALS_HALTED=false to resume trading.
+    if SIGNALS_HALTED:
+        return None
     symbol = prediction.get("symbol")
     direction = prediction.get("direction", "hold")
     confidence = _safe_float(prediction.get("confidence"), 0.0)
