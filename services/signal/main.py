@@ -272,7 +272,13 @@ async def btc_market_risk_off() -> tuple:
             f.get("momentum_60m", 0.0),
         ]
         neg = sum(1 for v in vals if v < 0)
-        return neg >= 3, f"neg={neg}/5 ema25_50={vals[1]:.4f} mom60m={vals[4]:.4f}"
+        mom60 = vals[4]  # 1h momentum
+        # Strong-turn gate (2026-06-16): risk-on requires BOTH good
+        # breadth (at most 1 of 5 negative) AND positive 1h momentum. This blocks the
+        # weak dead-cat chop bounces (short-term ticks up while 1h momentum is still
+        # down) that lost money, while still catching genuine strong turns.
+        risk_off = (neg >= 2) or (mom60 <= 0)
+        return risk_off, f"neg={neg}/5 mom60m={mom60:.4f} strong_turn_gate"
     except Exception as e:
         return False, f"err:{e}"
 
